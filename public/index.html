@@ -1,22 +1,13 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="utf-8" />
-    <title>MPEG Stream Viewer</title>
-  </head>
-  <body>
-    <h1>Streaming en tiempo real</h1>
-    <canvas id="video-canvas" width="640" height="480"></canvas>
-
-    <!-- Asegúrate de tener jsmpeg.min.js en la carpeta public -->
-    <script src="jsmpeg.min.js"></script>
-    <script>
-      const player = new JSMpeg.Player('ws://' + location.hostname + ':8000', {
-        canvas: document.getElementById('video-canvas'),
-        autoplay: true,
-        audio: false,
-        loop: true
-      });
-    </script>
-  </body>
+	<head>
+		<meta charset="utf-8" />
+		<title>WebRTC GStreamer Viewer</title>
+	</head>
+	<body>
+		<h1>WebRTC Streaming Viewer</h1>
+		<p id="status">Esperando...</p>
+		<video id="stream" autoplay playsinline controls style="width: 100%; max-width: 800px"></video>
+		<script src="client.js"></script>
+	</body>
 </html>

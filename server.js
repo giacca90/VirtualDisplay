@@ -1,56 +1,74 @@
-const fs = require('fs');
-const net = require('net');
 const express = require('express');
 const WebSocket = require('ws');
 const http = require('http');
 const path = require('path');
 
-const STREAM_PORT = 9999;      // Puerto TCP donde GStreamer envía el stream
-const HTTP_PORT = 8000;        // Puerto HTTP y WebSocket
+const HTTP_PORT = 8000;
 
 const app = express();
 const server = http.createServer(app);
+const wss = new WebSocket.Server({server, path: '/ws'});
 
-// WebSocket Server usando el mismo servidor HTTP
-const wss = new WebSocket.Server({ server });
+let peer = null; // cliente navegador
+let gstreamer = null; // cliente GStreamer
 
-let clients = [];
+wss.on('connection', (ws) => {
+	console.log('🔌 Nuevo WebSocket conectado');
 
-wss.on('connection', (socket) => {
-  clients.push(socket);
-  console.log('🟢 Cliente WebSocket conectado');
+	ws.on('message', (raw) => {
+		let data;
+		try {
+			data = JSON.parse(raw);
+			if (ws === peer || ws === gstreamer) {
+				console.log('⬇️ Mensaje recibido desde ' + (ws === peer ? 'peer' : 'gstreamer') + ': ', data);
+			} else {
+				console.log('⬇️ Primer mensaje recibido:', data);
+			}
+		} catch (e) {
+			console.error('Mensaje no JSON:', raw);
+			return;
+		}
 
-  socket.on('close', () => {
-    clients = clients.filter(s => s !== socket);
-    console.log('🔴 Cliente desconectado');
-  });
+		// Identificación inicial
+		if (data.type === 'client') {
+			console.log('🎥 Cliente navegador registrado');
+			peer = ws;
+			ws.send(JSON.stringify({type: 'ack', role: 'client'}));
+			return;
+		}
+		if (data.type === 'gstreamer') {
+			console.log('📡 GStreamer registrado');
+			gstreamer = ws;
+			ws.send(JSON.stringify({type: 'ack', role: 'gstreamer'}));
+			return;
+		}
+
+		// Reenvío SDP/ICE
+
+		if (ws === peer && gstreamer) {
+			console.log('→ Reenvío a GStreamer:', raw);
+			gstreamer.send(raw);
+		} else if (ws === gstreamer && peer) {
+			console.log('→ Reenvío al navegador:', raw);
+			peer.send(raw);
+		}
+	});
+
+	ws.on('close', () => {
+		if (ws === peer) {
+			console.log('❌ Peer desconectado');
+			peer = null;
+		}
+		if (ws === gstreamer) {
+			console.log('❌ GStreamer desconectado');
+			gstreamer = null;
+		}
+	});
 });
 
-// TCP server para recibir video de GStreamer
-const streamServer = net.createServer((socket) => {
-  console.log('📡 GStreamer conectado');
-
-  socket.on('data', (data) => {
-    clients.forEach((ws) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data);
-      }
-    });
-  });
-
-  socket.on('end', () => {
-    console.log('📴 GStreamer desconectado');
-  });
-});
-
-streamServer.listen(STREAM_PORT, () => {
-  console.log(`🎥 Esperando stream en TCP puerto ${STREAM_PORT}`);
-});
-
-// Servir archivos estáticos desde carpeta "public"
+// Servir archivos estáticos en /public
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Iniciar servidor HTTP + WS
 server.listen(HTTP_PORT, () => {
-  console.log(`🌐 Servidor HTTP y WebSocket corriendo en http://localhost:${HTTP_PORT}`);
+	console.log(`🌍 Servidor WebRTC en http://localhost:${HTTP_PORT}`);
 });

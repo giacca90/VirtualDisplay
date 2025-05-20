@@ -1,7 +1,59 @@
-function websocketServerConnect() {
-  const wsUrl = `ws://${location.hostname}:8000`; // Asegúrate de que coincida con tu server.js
-  const canvas = document.createElement('canvas');
-  document.body.appendChild(canvas);
+// public/client.js
+const video = document.getElementById('stream');
+let pc;
 
-  const player = new JSMpeg.Player(wsUrl, { canvas: canvas, autoplay: true, audio: false });
-}
+// Conecta y registra
+const ws = new WebSocket(`ws://${location.hostname}:8000/ws`);
+ws.addEventListener('open', () => {
+	console.log('🔌 WS abierto, registro client');
+	ws.send(JSON.stringify({type: 'client'}));
+});
+
+ws.addEventListener('message', async (ev) => {
+	const msg = JSON.parse(ev.data);
+	console.log('⬅️ Recibido en browser:', msg);
+
+	if (!pc) {
+		pc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+
+		pc.onicecandidate = (e) => {
+			if (e.candidate) {
+				ws.send(
+					JSON.stringify({
+						type: 'ice',
+						sdpMLineIndex: e.candidate.sdpMLineIndex,
+						candidate: e.candidate.candidate,
+					}),
+				);
+				console.log('ICE candidate enviado:', e.candidate);
+			}
+		};
+		pc.ontrack = (e) => {
+			if (video && e.streams[0]) {
+				video.srcObject = e.streams[0];
+				console.log('▶️ Stream entrante asignado al <video>');
+			}
+		};
+	}
+	if (msg.type === 'ack' && msg.role === 'client') {
+		ws.send(JSON.stringify({type: 'ready'}));
+		console.log('📨 Enviado: ready');
+	}
+
+	if (msg.type === 'offer') {
+		console.log('▶️ Setting remote offer');
+		await pc.setRemoteDescription(new RTCSessionDescription(msg));
+		const answer = await pc.createAnswer();
+		await pc.setLocalDescription(answer);
+		console.log('▶️ Enviando answer');
+		ws.send(JSON.stringify({type: 'answer', sdp: pc.localDescription.sdp}));
+	} else if (msg.type === 'ice' && msg.candidate) {
+		console.log('▶️ Agregando ICE candidate');
+		await pc.addIceCandidate(
+			new RTCIceCandidate({
+				candidate: msg.candidate,
+				sdpMLineIndex: msg.sdpMLineIndex,
+			}),
+		);
+	}
+});
