@@ -1,4 +1,5 @@
 #define GST_USE_UNSTABLE_API
+#include <locale.h>
 #include <gst/gst.h>
 #include <gst/webrtc/webrtc.h>
 #include <gst/sdp/sdp.h>
@@ -137,6 +138,7 @@ static void on_negotiation_needed(GstElement *element, gpointer user_data) {
 }
 
 int main(int argc, char *argv[]) {
+	setlocale(LC_ALL, "");
     gst_init(&argc, &argv);
     loop = g_main_loop_new(NULL, FALSE);
     g_print("🚀 Iniciando aplicación WebRTC con GStreamer...\n");

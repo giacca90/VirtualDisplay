@@ -1,4 +1,6 @@
 const express = require('express');
+const os = require('os');
+const {spawn} = require('child_process');
 const WebSocket = require('ws');
 const http = require('http');
 const path = require('path');
@@ -71,5 +73,55 @@ wss.on('connection', (ws) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 server.listen(HTTP_PORT, () => {
-	console.log(`🌍 Servidor WebRTC en http://localhost:${HTTP_PORT}`);
+	console.log(`🌍 Servidor WebRTC en ${getLocalIPAddress()}:${HTTP_PORT}`);
+	console.log('🚀 Iniciando proceso WebRTC...');
+	webrtcProcess = spawn('./webrtc_screen', {
+		env: {...process.env, GST_DEBUG: '3'},
+	});
+
+	webrtcProcess.stdout.setEncoding('utf8');
+	webrtcProcess.stderr.setEncoding('utf8');
+
+	webrtcProcess.stdout.on('data', (data) => {
+		process.stdout.write(`🟢 WebRTC stdout: ${data}`);
+	});
+
+	webrtcProcess.stderr.on('data', (data) => {
+		process.stderr.write(`🔴 WebRTC stderr: ${data}`);
+	});
+
+	webrtcProcess.on('close', (code) => {
+		console.log(`❌ WebRTC salió con código ${code}`);
+		webrtcProcess = null;
+	});
 });
+
+// Función que detecta la IP local real
+function getLocalIPAddress() {
+	const interfaces = os.networkInterfaces();
+	for (const iface of Object.values(interfaces)) {
+		for (const config of iface) {
+			if (config.family === 'IPv4' && !config.internal) {
+				return config.address;
+			}
+		}
+	}
+	return 'localhost';
+}
+
+function shutdown() {
+	console.log('\n🛑 Apagando servidor...');
+	if (webrtcProcess) {
+		console.log('🧹 Terminando proceso WebRTC...');
+		webrtcProcess.kill('SIGINT');
+	}
+	server.close(() => {
+		console.log('✅ Servidor cerrado');
+		process.exit(0);
+	});
+}
+
+// Manejar señales de salida
+process.on('SIGINT', shutdown); // Ctrl+C
+process.on('SIGTERM', shutdown); // kill o systemd
+process.on('exit', shutdown);
