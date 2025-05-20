@@ -44,13 +44,14 @@ wss.on('connection', (ws) => {
 		}
 
 		// Reenvío SDP/ICE
-
 		if (ws === peer && gstreamer) {
-			console.log('→ Reenvío a GStreamer:', raw);
-			gstreamer.send(raw);
+			const dataToSend = JSON.stringify(data);
+			console.log('→ Reenvío a GStreamer:', dataToSend);
+			gstreamer.send(dataToSend);
 		} else if (ws === gstreamer && peer) {
-			console.log('→ Reenvío al navegador:', raw);
-			peer.send(raw);
+			const dataToSend = JSON.stringify(data);
+			console.log('→ Reenvío al navegador:', dataToSend);
+			peer.send(dataToSend);
 		}
 	});
 
