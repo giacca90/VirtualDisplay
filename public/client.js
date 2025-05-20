@@ -31,6 +31,29 @@ ws.addEventListener('message', async (ev) => {
 		pc.ontrack = (e) => {
 			if (video && e.streams[0]) {
 				video.srcObject = e.streams[0];
+				video.autoplay = true;
+				video.playsInline = true;
+
+				video.onloadedmetadata = async () => {
+					try {
+						await video.play();
+						console.log('▶️ Reproducción automática iniciada');
+
+						if (video.requestFullscreen) {
+							await video.requestFullscreen();
+							console.log('🖥️ Pantalla completa activada');
+						} else if (video.webkitRequestFullscreen) {
+							// Safari
+							await video.webkitRequestFullscreen();
+						} else if (video.msRequestFullscreen) {
+							// IE
+							await video.msRequestFullscreen();
+						}
+					} catch (err) {
+						console.warn('⚠️ Error al reproducir o entrar a pantalla completa:', err);
+					}
+				};
+
 				console.log('▶️ Stream entrante asignado al <video>');
 			}
 		};
