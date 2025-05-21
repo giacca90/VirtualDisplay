@@ -1,0 +1,33 @@
+# 1. Obtener fuentes del kernel
+apt source linux-image-$(uname -r)
+cd linux-*
+
+# 2. Habilitar vkms en .config
+make menuconfig
+#   Device Drivers → Graphics support → <M> Virtual KMS (EXPERIMENTAL)
+
+# 3. Compilar sólo vkms
+make -j$(nproc) drivers/gpu/drm/vkms/
+
+# 4. Instalar módulo manualmente
+sudo mkdir -p /lib/modules/$(uname -r)/kernel/drivers/gpu/drm/vkms/
+sudo cp drivers/gpu/drm/vkms/vkms.ko \
+    /lib/modules/$(uname -r)/kernel/drivers/gpu/drm/vkms/
+sudo depmod -a
+sudo modprobe vkms
+
+# 5. Preparar DKMS (solo una vez)
+sudo mkdir -p /usr/src/vkms-1.0
+cd drivers/gpu/drm/vkms/
+sudo cp *.c *.h Makefile /usr/src/vkms-1.0/
+# ↳ Crear Makefile y dkms.conf en /usr/src/vkms-1.0/ según vimos
+
+# 6. Registrar/compilar/instalar con DKMS
+sudo dkms remove -m vkms -v 1.0 --all      # limpia intentos previos
+sudo dkms add    -m vkms -v 1.0
+sudo dkms build  -m vkms -v 1.0
+sudo dkms install-m vkms -v 1.0
+
+# 7. Verificar
+dkms status
+lsmod | grep vkms
