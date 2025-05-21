@@ -1,8 +1,8 @@
 [Desktop Entry]
 Name=Proyector Virtual
 Comment=Activa o desactiva la pantalla virtual y transmisión
-Exec=/ruta/completa/al/script/proyector_virtual_toggle.sh
-Icon=/usr/share/icons/virtualScreanOff.png
+Exec=/ruta/completa/al/script/VirtualScreen.sh
+Icon=/usr/share/icons/virtualScreenOff.png
 Terminal=false
 Type=Application
 Categories=Utility;
