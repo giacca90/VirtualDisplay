@@ -31,3 +31,11 @@ sudo dkms install-m vkms -v 1.0
 # 7. Verificar
 dkms status
 lsmod | grep vkms
+
+
+
+
+
+
+gsl 
+gslcblas

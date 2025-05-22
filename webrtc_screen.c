@@ -145,15 +145,81 @@ int main(int argc, char *argv[]) {
 
     // 1) Construir el pipeline
     GError *err = NULL;
+
+// Versión raw - obtima latencia, cero congelaciónes, bajo ancho de banda
+
     pipeline = gst_parse_launch(
-        "ximagesrc use-damage=0 do-timestamp=true startx=0 starty=0 endx=1919 endy=1080 "  // do-timestamp fuerza timestamps :contentReference[oaicite:1]{index=1}
-        "! video/x-raw,framerate=30/1 "
-        "! videorate "                                                                  // regula framerate :contentReference[oaicite:2]{index=2}
-        "! videoconvert ! video/x-raw,width=1920,height=1080 ! queue "
-        "! vp8enc deadline=1 ! rtpvp8pay "
-        "! application/x-rtp,media=video,encoding-name=VP8,payload=96 "
-        "! webrtcbin name=webrtc",
-        &err);
+    "ximagesrc use-damage=0 do-timestamp=true ! "
+    "video/x-raw,format=RGB,framerate=30/1,width=1280,height=720 ! "
+    "queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 ! "
+    "rtpvrawpay ! "
+    "application/x-rtp,media=video,encoding-name=RAW,payload=96 ! "
+    "webrtcbin name=webrtc",
+    &err);
+
+     // Versión jpegenc - la más rápida
+
+/*     pipeline = gst_parse_launch(
+    "ximagesrc use-damage=0 do-timestamp=true ! "
+    "video/x-raw,framerate=30/1 ! "
+    "queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 ! "
+    "videoconvert ! "
+    "videoscale method=0 add-borders=false ! "
+    "video/x-raw,width=1920,height=1080 ! "
+    "jpegenc ! "
+    "rtpjpegpay ! "
+    "application/x-rtp,media=video,encoding-name=JPEG,payload=96 ! "
+    "webrtcbin name=webrtc",
+    &err);
+ */
+
+// Versión h264 - bastante buena, todavía tiene congelaciónes
+
+    /* pipeline = gst_parse_launch(
+    "ximagesrc use-damage=0 do-timestamp=true ! "
+    "video/x-raw,framerate=30/1 ! "
+    "queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 ! "
+    "videoconvert ! "
+    "videoscale method=0 add-borders=false ! "
+    "video/x-raw,width=1920,height=1080 ! "
+    "x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 key-int-max=30 ! "
+    "rtph264pay config-interval=1 pt=96 ! "
+    "application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
+    "webrtcbin name=webrtc",
+    &err);
+ */
+
+    // Versión vp8
+   /* pipeline = gst_parse_launch(
+    "ximagesrc use-damage=0 do-timestamp=true startx=0 starty=0 endx=1919 endy=1079 ! "
+    "video/x-raw,framerate=30/1 ! "
+    "queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 ! "
+    "videoconvert ! "
+    "videoscale method=0 add-borders=false ! "
+    "video/x-raw,width=1920,height=1080 ! "
+    "vp8enc deadline=1 cpu-used=8 threads=4 target-bitrate=2000000 resize-allowed=false ! "
+    "rtpvp8pay picture-id-mode=0 ! "
+    "application/x-rtp,media=video,encoding-name=VP8,payload=96 ! "
+    "webrtcbin name=webrtc",
+    &err);
+ */
+
+// Versión openh264enc - mucha latencia, pocas congelaciónes, mucho acho de banda
+
+/* pipeline = gst_parse_launch(
+    "ximagesrc use-damage=0 do-timestamp=true ! "
+    "video/x-raw,framerate=30/1 ! "
+    "queue leaky=downstream max-size-buffers=1 max-size-time=0 max-size-bytes=0 ! "
+    "videoconvert ! "
+    "videoscale method=0 add-borders=false ! "
+    "video/x-raw,width=1920,height=1080 ! "
+    "openh264enc bitrate=2000000 complexity=0 rate-control=1 ! "
+    "rtph264pay config-interval=1 pt=96 ! "
+    "application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
+    "webrtcbin name=webrtc",
+    &err);
+ */
+
     if (!pipeline) {
         g_printerr("Pipeline error: %s\n", err->message);
         return -1;
