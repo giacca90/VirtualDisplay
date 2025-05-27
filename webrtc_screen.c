@@ -225,6 +225,7 @@ int main(int argc, char *argv[]) {
     pipeline   = gst_pipeline_new("webrtc-pipeline");
     gst_element_decorate_stream_id(pipeline, stream_id);
     gst_pipeline_set_delay(GST_PIPELINE(pipeline), 0);
+	gst_pipeline_auto_clock(GST_PIPELINE(pipeline));
 
     ximagesrc  = gst_element_factory_make("ximagesrc",     "src");
     gst_element_decorate_stream_id(ximagesrc,  stream_id);
@@ -306,20 +307,11 @@ g_object_set(encoder,
         !gst_element_link(queue_elem, videoconvert) ||
         !gst_element_link(videoconvert, encoder) ||
         !gst_element_link(encoder, parser_elem) ||
-        !gst_element_link(parser_elem, payloader)) {
+        !gst_element_link(parser_elem, payloader) ||
+		!gst_element_link(payloader, webrtc)) {
         g_printerr("❌ Error al enlazar elementos\n");
         return -1;
     }
-    // Enlazar payloader -> webrtcbin
-        GstPad *srcpad  = gst_element_get_static_pad(payloader,  "src");
-        GstPad *sinkpad = gst_element_request_pad_simple(webrtc, "sink_%u");
-        if (!srcpad || !sinkpad || gst_pad_link(srcpad, sinkpad) != GST_PAD_LINK_OK) {
-            g_printerr("❌ No se pudo enlazar payloader -> webrtcbin\n");
-            return -1;
-        }
-        gst_object_unref(srcpad);
-        gst_object_unref(sinkpad);
-
     // 6) Configurar reloj y start-time
     
     GstClock *clock = gst_system_clock_obtain();
@@ -342,14 +334,12 @@ g_object_set(encoder,
 	print_h264_caps_info(parser_elem);
 
     // 9) Conexión al servidor de señalización
-    {
-        SoupSession *sess = soup_session_new_with_options(NULL);
-        SoupMessage *msg = soup_message_new("GET", "ws://localhost:8000/ws");
-        soup_session_websocket_connect_async(
-            sess, msg, NULL, NULL, G_PRIORITY_DEFAULT,
-            NULL, (GAsyncReadyCallback)on_ws_connected, NULL);
-    }
-
+    SoupSession *sess = soup_session_new_with_options(NULL);
+    SoupMessage *msg = soup_message_new("GET", "ws://localhost:8000/ws");
+    soup_session_websocket_connect_async(
+        sess, msg, NULL, NULL, G_PRIORITY_DEFAULT,
+        NULL, (GAsyncReadyCallback)on_ws_connected, NULL);
+   
     // 10) Bucle principal
     g_main_loop_run(loop);
 

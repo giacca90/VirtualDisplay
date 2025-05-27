@@ -76,13 +76,18 @@ server.listen(HTTP_PORT, () => {
 	console.log(`🌍 Servidor WebRTC en ${getLocalIPAddress()}:${HTTP_PORT}`);
 	console.log('🚀 Iniciando proceso WebRTC...');
 	webrtcProcess = spawn('./webrtc_screen', {
-		env: {...process.env,
+		env: {
+			...process.env,
 			GST_DEBUG: '3',
-			// GST_debug: 'webrtcbin:4',
-			// GST_DEBUG: 'vaapih264enc:5,GST_PADS:1'
-			// GST_DEBUG: "h264parse:5"
+			// GST_DEBUG: ':3',
 			// GST_DEBUG: 'ximagesrc:4',
-			},
+			// GST_DEBUG: 'queue:3',
+			// GST_DEBUG: 'videoconvert:3',
+			// GST_DEBUG: 'vaapih264enc:3,GST_PADS:1'
+			// GST_DEBUG: 'h264parse:3',
+			// GST_DEBUG: 'rtph264pay:3',
+			// GST_debug: 'webrtcbin:3',
+		},
 	});
 
 	webrtcProcess.stdout.setEncoding('utf8');
