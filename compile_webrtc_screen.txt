@@ -1,7 +1,12 @@
-gcc webrtc_screen.c -o webrtc_screen \
+gcc webrtc_screen.c -o virtualScreen/webrtc_screen \
   $(pkg-config --cflags --libs \
-    gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 \
-    libsoup-3.0 json-glib-1.0)
-
+     gstreamer-1.0 \
+     gstreamer-webrtc-1.0 \
+     gstreamer-sdp-1.0 \
+     gstreamer-rtp-1.0 \
+     libsoup-3.0 \
+     json-glib-1.0 \
+     x11 \
+     xrandr)
 
 
