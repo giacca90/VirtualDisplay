@@ -1,16 +1,22 @@
 {
-  "name": "prueba-2",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "express": "^5.1.0",
-    "ws": "^8.18.2"
-  }
+	"name": "virtualdisplay",
+	"version": "0.1.0",
+	"main": "index.js",
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"keywords": [
+		"linux",
+		"virtual",
+		"display",
+		"web",
+		"webrtc"
+	],
+	"author": "La Gole Software LLC",
+	"license": "ISC",
+	"description": "Aplicativo para emitir por WebRTC una segunda pantalla virtual",
+	"dependencies": {
+		"express": "^5.1.0",
+		"ws": "^8.18.3"
+	}
 }
