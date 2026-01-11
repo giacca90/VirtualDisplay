@@ -83,8 +83,10 @@ static gboolean check_monitor(gpointer _){
                          "endy",   ny + nh - 1,
                          NULL);
             GstPad *srcpad = gst_element_get_static_pad(ximagesrc, "src");
-            gst_pad_send_event(srcpad, gst_event_new_reconfigure());
-            gst_object_unref(srcpad);
+            if (srcpad) {
+                gst_pad_send_event(srcpad, gst_event_new_reconfigure());
+                gst_object_unref(srcpad);
+            }
             GstPromise *p = gst_promise_new_with_change_func(on_offer_created, NULL, NULL);
             g_signal_emit_by_name(webrtc, "create-offer", NULL, p);
         }
@@ -183,10 +185,9 @@ static void on_negotiation_needed(GstElement *element, gpointer user_data) {
 }
 
 static void on_element_added(GstBin *bin, GstElement *child, gpointer user_data) {
-    const gchar *stream_id = user_data;
-    gst_element_decorate_stream_id(child, stream_id);
-    g_print("   ▶ Sub-elemento %s etiquetado con %s\n",
-            GST_ELEMENT_NAME(child), stream_id);
+    /* ya no decoramos elementos aquí para evitar la creación aleatoria
+       de stream-id por la API interna de decorate. Sólo registramos. */
+    g_print("   ▶ Sub-elemento añadido: %s\n", GST_ELEMENT_NAME(child));
 }
 
 static void print_h264_caps_info(GstElement *parser) {
@@ -221,82 +222,64 @@ int main(int argc, char *argv[]) {
     gchar *stream_id = g_uuid_string_random();
     g_print("🔖 Stream ID: %s\n", stream_id);
 
-    // 1) Crear pipeline y elementos
+    // 1) Crear pipeline y elementos (sin llamar a gst_element_decorate_stream_id)
     pipeline   = gst_pipeline_new("webrtc-pipeline");
-    gst_element_decorate_stream_id(pipeline, stream_id);
     gst_pipeline_set_delay(GST_PIPELINE(pipeline), 0);
-	gst_pipeline_auto_clock(GST_PIPELINE(pipeline));
+    gst_pipeline_auto_clock(GST_PIPELINE(pipeline));
 
     ximagesrc  = gst_element_factory_make("ximagesrc",     "src");
-    gst_element_decorate_stream_id(ximagesrc,  stream_id);
     g_object_set(ximagesrc,
              "use-damage", FALSE,
              "do-timestamp", TRUE,
              "startx", 0, "starty", 0,
              "endx", 1919, "endy", 1079,
-			//"framerate", 30,
-             "sync", FALSE,
-             "show-pointer", TRUE,                 
+             /* propiedad 'sync' removida porque no existe en algunas versiones de ximagesrc */
+             "show-pointer", TRUE,
              NULL);
 
     queue_elem = gst_element_factory_make("queue", "queue");
-    gst_element_decorate_stream_id(queue_elem, stream_id);
-	g_object_set(queue_elem,
-	    "leaky", 2,
-	    "max-size-buffers", 1,
-	    "max-size-time", 0,
-	    "max-size-bytes", 0,
-	    NULL);
+    g_object_set(queue_elem,
+        "leaky", 2,
+        "max-size-buffers", 1,
+        "max-size-time", 0,
+        "max-size-bytes", 0,
+        NULL);
 
     GstElement *videoconvert = gst_element_factory_make("videoconvert", "videoconvert");
-    gst_element_decorate_stream_id(videoconvert, stream_id);
 
     encoder    = gst_element_factory_make("vaapih264enc",   "encoder");
-    gst_element_decorate_stream_id(encoder,    stream_id);
+    if (!encoder) {
+        /* fallback razonable: x264enc si no hay vaapi */
+        encoder = gst_element_factory_make("x264enc", "encoder");
+    }
     g_object_set(encoder,
-    "bitrate", 0, // 0 = auto
-    "keyframe-period", 0, // 0 = auto
-    "low-latency", TRUE,
-	"tune", 3, // lowpower
-    NULL); 
-
-    /* encoder = gst_element_factory_make("x264enc", "encoder");
-gst_element_decorate_stream_id(encoder, stream_id);
-g_object_set(encoder,
-    "bitrate", 8000,            // en kbit/s
-    "key-int-max", 5,           // keyframe cada 5 frames
-    "tune", 0x00000004,         // zerolatency
-    "speed-preset", 3,          // ultrafast (1)
-    "threads", 4,               // ajusta según tu CPU
-    NULL); */
+        "bitrate", 0, /* auto / cambiar si se desea */
+        NULL);
 
     parser_elem= gst_element_factory_make("h264parse",      "parser");
-    gst_element_decorate_stream_id(parser_elem,stream_id);
 
     payloader  = gst_element_factory_make("rtph264pay",     "payloader");
-    gst_element_decorate_stream_id(payloader,  stream_id);
     g_object_set(payloader,
              "config-interval", 1,
              "pt", 96,
              NULL);
 
     webrtc     = gst_element_factory_make("webrtcbin",      "webrtc");
-    gst_element_decorate_stream_id(webrtc,     stream_id);
     g_object_set(webrtc,
              "latency", 0,
              "stun-server", "stun://stun.l.google.com:19302",
              NULL);
 
 
-    if (!pipeline || !ximagesrc || !queue_elem || 
+    if (!pipeline || !ximagesrc || !queue_elem ||
         !encoder || !parser_elem || !payloader || !webrtc) {
         g_printerr("❌ Error al crear elementos\n");
         return -1;
     }
 
-    // 3) Señal para etiquetar futuros sub-elementos
+    // 3) Señal para detectar sub-elementos añadidos (sólo para logging)
     g_signal_connect(pipeline, "element-added",
-                     G_CALLBACK(on_element_added), stream_id);
+                     G_CALLBACK(on_element_added), NULL);
 
     // 5) Montar el pipeline
     gst_bin_add_many(GST_BIN(pipeline),
@@ -308,16 +291,31 @@ g_object_set(encoder,
         !gst_element_link(videoconvert, encoder) ||
         !gst_element_link(encoder, parser_elem) ||
         !gst_element_link(parser_elem, payloader) ||
-		!gst_element_link(payloader, webrtc)) {
+        !gst_element_link(payloader, webrtc)) {
         g_printerr("❌ Error al enlazar elementos\n");
         return -1;
     }
-    // 6) Configurar reloj y start-time
-    
+
+    /* --- Enviar STREAM_START con el stream_id en el pad 'src' de ximagesrc
+       usando la versión gst_event_new_stream_start(const gchar *stream_id) */
+    GstPad *xsrc_pad = gst_element_get_static_pad(ximagesrc, "src");
+    if (xsrc_pad) {
+        GstEvent *start = gst_event_new_stream_start(stream_id);
+        if (!gst_pad_send_event(xsrc_pad, start)) {
+            g_warning("⚠️ No se pudo enviar STREAM_START al pad src de ximagesrc");
+        } else {
+            g_print("✅ STREAM_START enviado con stream_id %s\n", stream_id);
+        }
+        gst_object_unref(xsrc_pad);
+    } else {
+        g_warning("⚠️ No encontré pad 'src' en ximagesrc para enviar STREAM_START");
+    }
+
+    // 6) Configurar reloj y start-time (antes de PLAYING)
     GstClock *clock = gst_system_clock_obtain();
-	gst_pipeline_use_clock(GST_PIPELINE(pipeline), clock);
-	gst_element_set_start_time(pipeline, gst_clock_get_time(clock));
-	gst_object_unref(clock);
+    gst_pipeline_use_clock(GST_PIPELINE(pipeline), clock);
+    gst_element_set_start_time(pipeline, gst_clock_get_time(clock));
+    gst_object_unref(clock);
 
     // 7) Señales WebRTC
     g_signal_connect(webrtc, "on-negotiation-needed", G_CALLBACK(on_negotiation_needed), NULL);
@@ -327,11 +325,11 @@ g_object_set(encoder,
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
     g_print("▶️ Pipeline en PLAYING\n");
 
-	// Espera breve para que se negocien caps
-	g_usleep(200 * 1000); // 200 ms
+    // Espera breve para que se negocien caps
+    g_usleep(200 * 1000); // 200 ms
 
-	// Imprimir profile y level actuales
-	print_h264_caps_info(parser_elem);
+    // Imprimir profile y level actuales
+    print_h264_caps_info(parser_elem);
 
     // 9) Conexión al servidor de señalización
     SoupSession *sess = soup_session_new_with_options(NULL);
@@ -339,7 +337,7 @@ g_object_set(encoder,
     soup_session_websocket_connect_async(
         sess, msg, NULL, NULL, G_PRIORITY_DEFAULT,
         NULL, (GAsyncReadyCallback)on_ws_connected, NULL);
-   
+
     // 10) Bucle principal
     g_main_loop_run(loop);
 

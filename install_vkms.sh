@@ -3,152 +3,114 @@ set -euo pipefail
 
 VKMS_VER="1.0"
 KERNEL_VER="$(uname -r)"
+# Quitar sufijos como +kali o -amd64 para obtener la versión base
+KERNEL_BASE="$(echo "$KERNEL_VER" | sed -E 's/[+].*//; s/-.*//')"  # e.g. 6.16.8
+KERNEL_SHORT="$(echo "$KERNEL_BASE" | cut -d. -f1,2)"              # e.g. 6.16
 DKMS_SRC="/usr/src/vkms-${VKMS_VER}"
-NJOBS="$(nproc)"
 
 echo "==> 1. Instalar dependencias y headers del kernel actual"
-sudo apt update
-sudo apt install -y build-essential dkms linux-headers-"${KERNEL_VER}" \
-	libncurses-dev bison flex libssl-dev libelf-dev bc apt-src
+sudo apt update -y
+sudo apt install -y build-essential dkms linux-headers-"${KERNEL_VER}" libelf-dev wget xz-utils ca-certificates rsync
 
 echo
-echo "==> 2. Descargar fuentes del kernel"
+echo "==> 2. Obtener código fuente del kernel actual (${KERNEL_BASE})"
 cd "$HOME"
-apt source linux-image-"${KERNEL_VER}"
-KERN_SRC_DIR="$(find . -maxdepth 1 -type d -name 'linux-*' | head -n1)"
-if [ -z "$KERN_SRC_DIR" ]; then
-	echo "ERROR: No se encontró el directorio de fuentes del kernel"
-	exit 1
+SRC_DIR="$(find . -maxdepth 1 -type d -name "linux-source-${KERNEL_SHORT}*" | head -n1 || true)"
+
+if [ -z "$SRC_DIR" ]; then
+  echo "   - Intentando apt source linux-source-${KERNEL_SHORT}..."
+  apt source linux-source-"${KERNEL_SHORT}" >/dev/null 2>&1 || true
+  SRC_DIR="$(find . -maxdepth 1 -type d -name "linux-source-${KERNEL_SHORT}*" | head -n1 || true)"
 fi
 
-cd "$KERN_SRC_DIR"
+if [ -z "$SRC_DIR" ]; then
+  echo "   - No disponible vía APT. Descargando de kernel.org..."
+  KERNEL_MAJOR="$(echo "$KERNEL_BASE" | cut -d. -f1)"
+  KERNEL_TARBALL="linux-${KERNEL_BASE}.tar.xz"
+  KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/${KERNEL_TARBALL}"
 
-echo
-echo "==> 3. Configurar VKMS en .config del kernel"
-grep -q '^CONFIG_DRM_VKMS=m' .config || {
-	echo "-> Activando CONFIG_DRM_VKMS=m"
-	sed -i 's/^# \(CONFIG_DRM_VKMS\)=.*/\1=m/' .config || echo 'CONFIG_DRM_VKMS=m' >>.config
-	make olddefconfig
-}
+  echo "   - Descargando ${KERNEL_URL}"
+  wget -q "$KERNEL_URL" -O linux.tar.xz || {
+    echo "❌ No se pudo descargar el código fuente del kernel ${KERNEL_BASE}"
+    exit 1
+  }
 
-echo
-echo "==> 4. Compilar vkms.ko"
-make -j"${NJOBS}" drivers/gpu/drm/vkms/
-if [ ! -f drivers/gpu/drm/vkms/vkms.ko ]; then
-	echo "ERROR: vkms.ko no se generó correctamente"
-	exit 1
+  echo "   - Extrayendo el código fuente..."
+  tar -xf linux.tar.xz
+  rm linux.tar.xz
+
+  # Detectar directorio extraído (seguro)
+  EXTRACTED_DIR="$(find . -maxdepth 1 -type d -name "linux-${KERNEL_BASE}" | head -n1 || true)"
+  if [ -z "$EXTRACTED_DIR" ]; then
+    EXTRACTED_DIR="$(find . -maxdepth 1 -type d -name "linux-[0-9]*" | sort -r | head -n1 || true)"
+  fi
+
+  if [ -n "$EXTRACTED_DIR" ]; then
+    mv "$EXTRACTED_DIR" "linux-source-${KERNEL_SHORT}"
+    SRC_DIR="$HOME/linux-source-${KERNEL_SHORT}"
+  else
+    echo "❌ No se pudo identificar el directorio extraído del kernel."
+    exit 1
+  fi
 fi
 
+if [ ! -d "$SRC_DIR/drivers/gpu/drm/vkms" ]; then
+  echo "❌ No se encontró el código fuente de vkms en $SRC_DIR"
+  exit 1
+fi
+echo "   - Fuente encontrada en: $SRC_DIR"
+
 echo
-echo "==> 5. Preparar DKMS"
+echo "==> 3. Preparar carpeta para DKMS"
+# limpiar y recrear /usr/src/vkms-1.0 (con permisos root)
 sudo rm -rf "${DKMS_SRC}"
 sudo mkdir -p "${DKMS_SRC}"
-cd drivers/gpu/drm/vkms/
-sudo cp *.c *.h Makefile "${DKMS_SRC}/"
 
-sudo tee "${DKMS_SRC}/Makefile" >/dev/null <<'EOF'
-obj-m += vkms.o
-vkms-objs := vkms_drv.o vkms_output.o vkms_plane.o vkms_crtc.o vkms_composer.o vkms_formats.o vkms_writeback.o
-EOF
+# copiar el árbol completo de vkms respetando la estructura, excluyendo tests/
+sudo rsync -a --delete --exclude='tests' "$SRC_DIR/drivers/gpu/drm/vkms/" "${DKMS_SRC}/"
 
+# Generar Makefile dinámico: incluye todos los .c (con rutas relativas) excepto tests
+echo "obj-m += vkms.o" | sudo tee "${DKMS_SRC}/Makefile" >/dev/null
+
+# Crear la lista de objetos a partir de los .c detectados
+OBJS="$(cd "${DKMS_SRC}" && find . -type f -name '*.c' ! -path './tests/*' -printf '%P\n' | sed 's/\.c$/.o/' | tr '\n' ' ' | sed 's/ $//')"
+
+if [ -z "$OBJS" ]; then
+  echo "❌ No se detectaron fuentes .c dentro de ${DKMS_SRC}"
+  exit 1
+fi
+
+echo "vkms-objs := ${OBJS}" | sudo tee -a "${DKMS_SRC}/Makefile" >/dev/null
+
+echo
+echo "   - Archivos incluidos en Makefile:"
+cd "${DKMS_SRC}" && find . -type f -name '*.c' ! -path './tests/*' -printf '      • %P\n'
+
+# Crear dkms.conf con ruta /build (importante: DKMS copiará a .../build)
 sudo tee "${DKMS_SRC}/dkms.conf" >/dev/null <<EOF
 PACKAGE_NAME="vkms"
 PACKAGE_VERSION="${VKMS_VER}"
-MAKE="make -C \$kernel_source_dir M=\$dkms_tree/\$PACKAGE_NAME/\$PACKAGE_VERSION/build modules"
-CLEAN="make -C \$kernel_source_dir M=\$dkms_tree/\$PACKAGE_NAME/\$PACKAGE_VERSION/build clean"
+MAKE="make -C /lib/modules/${KERNEL_VER}/build M=\$dkms_tree/\$PACKAGE_NAME/\$PACKAGE_VERSION/build modules"
+CLEAN="make -C /lib/modules/${KERNEL_VER}/build M=\$dkms_tree/\$PACKAGE_NAME/\$PACKAGE_VERSION/build clean"
 BUILT_MODULE_NAME[0]="vkms"
 DEST_MODULE_LOCATION[0]="/kernel/drivers/gpu/drm/vkms"
 AUTOINSTALL="yes"
 EOF
 
 echo
-echo "==> 6. Registrar e instalar con DKMS"
+echo "==> 4. Registrar e instalar con DKMS"
+# remover versiones previas (si existen)
 sudo dkms remove -m vkms -v "${VKMS_VER}" --all || true
 sudo dkms add -m vkms -v "${VKMS_VER}"
 sudo dkms build -m vkms -v "${VKMS_VER}"
 sudo dkms install -m vkms -v "${VKMS_VER}"
 
 echo
-echo "==> 7. Cargar módulo vkms"
-sudo modprobe vkms
+echo "==> 5. Cargar módulo vkms"
+sudo modprobe vkms || true
 
 if lsmod | grep -q '^vkms'; then
-	echo "✅ vkms cargado correctamente"
+  echo "✅ vkms cargado correctamente"
 else
-	echo "⚠️ vkms no se cargó. Ejecuta: sudo modprobe vkms"
+  echo "⚠️ vkms no se cargó. Ejecuta: sudo modprobe vkms"
 fi
-
-echo
-echo "==> 8. Crear ~/.xprofile si no existe"
-XPROFILE="$HOME/.xprofile"
-if [ ! -f "$XPROFILE" ]; then
-	cat >"$XPROFILE" <<'EOF'
-#!/bin/bash
-
-# Esperar a que xrandr esté listo
-for i in {1..10}; do
-  xrandr | grep -q " connected" && break
-  sleep 1
-done
-
-PRIMARY=$(xrandr --listmonitors | awk '$2 == "*" {print $4}')
-if [ -z "$PRIMARY" ]; then
-  echo "No se detectó pantalla principal."
-  exit 1
-fi
-
-RESOLUTION=$(xrandr | awk -v output="$PRIMARY" '
-  $1 == output && $2 == "connected" {
-    getline
-    if ($2 == "*") print $1
-  }
-')
-if [ -z "$RESOLUTION" ]; then
-  echo "No se pudo obtener resolución de la pantalla principal."
-  exit 1
-fi
-
-GEOM=$(xrandr | grep -w "$PRIMARY" | grep -oP '[0-9]+x[0-9]+')
-WIDTH=$(echo "$GEOM" | cut -dx -f1)
-HEIGHT=$(echo "$GEOM" | cut -dx -f2)
-VIRTUAL_SIZE="${WIDTH}x${HEIGHT}"
-TOTAL_HEIGHT=$((HEIGHT * 2))
-
-xrandr --fb ${WIDTH}x${TOTAL_HEIGHT}
-xrandr --setmonitor Virtual-1-1 ${VIRTUAL_SIZE}+0+${HEIGHT} none
-xrandr --output Virtual-1-1 --mode $RESOLUTION --above "$PRIMARY"
-xrandr --output "$PRIMARY" --primary
-EOF
-
-	chmod +x "$XPROFILE"
-	echo "📝 ~/.xprofile creado correctamente"
-else
-	echo "ℹ️ ~/.xprofile ya existe, no se sobrescribió"
-fi
-
-echo
-echo "==> 9. Crear y habilitar servicio systemd para recompilar vkms tras actualizaciones del kernel"
-
-SERVICE_PATH="/etc/systemd/system/vkms-autoinstall.service"
-
-sudo tee "${SERVICE_PATH}" >/dev/null <<'EOF'
-[Unit]
-Description=Auto-reinstala el módulo vkms con DKMS tras actualizaciones del kernel
-After=dkms.service
-ConditionPathExists=/usr/src/vkms-1.0
-
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/dkms autoinstall
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable vkms-autoinstall.service
-
-echo "✅ Servicio vkms-autoinstall creado y habilitado"
-
-echo
-echo "🎉 ¡Script completado! vkms instalado, módulo cargado, y servicio systemd activo."
