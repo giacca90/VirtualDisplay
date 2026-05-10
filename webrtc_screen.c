@@ -228,7 +228,7 @@ int main(int argc, char *argv[]) {
 
     pipeline = gst_pipeline_new("pipeline");
     ximagesrc = gst_element_factory_make("ximagesrc", "src");
-    g_object_set(ximagesrc, "use-damage", FALSE, "do-timestamp", TRUE, NULL);
+    g_object_set(ximagesrc, "use-damage", FALSE, "do-timestamp", TRUE, "show-pointer", TRUE, NULL);
 
     capsfilter = gst_element_factory_make("capsfilter", "fps");
     GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=30/1");
@@ -237,7 +237,11 @@ int main(int argc, char *argv[]) {
     queue_elem = gst_element_factory_make("queue", "q_main");
     postproc = gst_element_factory_make("vaapipostproc", "pp");
     encoder = gst_element_factory_make("vaapih264enc", "enc");
-    if (!encoder) encoder = gst_element_factory_make("x264enc", "enc");
+    if (encoder) {
+        g_object_set(encoder, "max-bframes", 0, "bitrate", 4000, "rate-control", 2, NULL);
+    } else {
+        encoder = gst_element_factory_make("x264enc", "enc");
+    }
 
     parser_elem = gst_element_factory_make("h264parse", "parse");
     payloader = gst_element_factory_make("rtph264pay", "pay");

@@ -1,9 +1,9 @@
 const express = require('express');
-const os = require('os');
-const {spawn} = require('child_process');
+const os = require('node:os');
+const {spawn} = require('node:child_process');
 const WebSocket = require('ws');
-const http = require('http');
-const path = require('path');
+const http = require('node:http');
+const path = require('node:path');
 
 const HTTP_PORT = 8000;
 
@@ -18,17 +18,11 @@ wss.on('connection', (ws) => {
 	console.log('🔌 Nuevo WebSocket conectado');
 
 	ws.on('message', (raw) => {
-		let data;
-		try {
-			data = JSON.parse(raw);
-			if (ws === peer || ws === gstreamer) {
-				console.log('⬇️ Mensaje recibido desde ' + (ws === peer ? 'peer' : 'gstreamer') + ': ', data);
-			} else {
-				console.log('⬇️ Primer mensaje recibido:', data);
-			}
-		} catch (e) {
-			console.error('Mensaje no JSON:', raw);
-			return;
+		let data = JSON.parse(raw);
+		if (ws === peer || ws === gstreamer) {
+			console.log('⬇️ Mensaje recibido desde ' + (ws === peer ? 'peer' : 'gstreamer') + ': ', data);
+		} else {
+			console.log('⬇️ Primer mensaje recibido:', data);
 		}
 
 		// Identificación inicial
@@ -75,7 +69,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 server.listen(HTTP_PORT, () => {
 	console.log(`🌍 Servidor WebRTC en ${getLocalIPAddress()}:${HTTP_PORT}`);
 	console.log('🚀 Iniciando proceso WebRTC...');
-	webrtcProcess = spawn('./webrtc_screen', {
+	let webrtcProcess = spawn('./webrtc_screen', {
 		env: {...process.env, GST_DEBUG: '3'},
 	});
 
