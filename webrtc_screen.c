@@ -11,7 +11,7 @@
 #include <glib.h>
 
 static GMainLoop *loop;
-static GstElement *pipeline, *ximagesrc, *queue_elem, *postproc, *encoder, *parser_elem, *payloader, *webrtc;
+static GstElement *pipeline, *ximagesrc, *capsfilter, *queue_elem, *postproc, *encoder, *parser_elem, *payloader, *webrtc;
 static SoupWebsocketConnection *websocket = NULL;
 
 typedef struct { int x,y,w,h; } Geometry;
@@ -139,21 +139,13 @@ static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType t
         const gchar *action = json_object_get_string_member(msg, "action");
         if (g_strcmp0(action, "lower") == 0) {
             g_print("⚠️ Cliente pide bajar calidad\n");
-            g_object_set(ximagesrc,
-                "endx", 1279, "endy", 719, // 1280x720
-                NULL);
-            g_object_set(encoder,
-                "bitrate", 1000000, // 1 Mbps
-                NULL);
+            g_object_set(ximagesrc, "endx", 1279, "endy", 719, NULL);
+            g_object_set(encoder, "bitrate", 1000, NULL); // vaapih264enc usa kbps, no bps
             g_object_set(encoder, "force-keyframe", TRUE, NULL);
         } else if (g_strcmp0(action, "raise") == 0) {
             g_print("⬆️ Cliente pide subir calidad\n");
-            g_object_set(ximagesrc,
-                "endx", 1919, "endy", 1079, // 1920x1080
-                NULL);
-            g_object_set(encoder,
-                "bitrate", 2000000, // 2 Mbps (ajusta según tu red)
-                NULL);
+            g_object_set(ximagesrc, "endx", 1919, "endy", 1079, NULL);
+            g_object_set(encoder, "bitrate", 2000, NULL); // vaapih264enc usa kbps
             g_object_set(encoder, "force-keyframe", TRUE, NULL);
         }
     }
@@ -185,8 +177,6 @@ static void on_negotiation_needed(GstElement *element, gpointer user_data) {
 }
 
 static void on_element_added(GstBin *bin, GstElement *child, gpointer user_data) {
-    /* ya no decoramos elementos aquí para evitar la creación aleatoria
-       de stream-id por la API interna de decorate. Sólo registramos. */
     g_print("   ▶ Sub-elemento añadido: %s\n", GST_ELEMENT_NAME(child));
 }
 
@@ -218,86 +208,85 @@ int main(int argc, char *argv[]) {
     gst_init(&argc, &argv);
     loop = g_main_loop_new(NULL, FALSE);
 
-    // 0) Generar stream-ID único
     gchar *stream_id = g_uuid_string_random();
     g_print("🔖 Stream ID: %s\n", stream_id);
 
-    // 1) Crear pipeline y elementos (sin llamar a gst_element_decorate_stream_id)
-    pipeline   = gst_pipeline_new("webrtc-pipeline");
+    pipeline = gst_pipeline_new("webrtc-pipeline");
     gst_pipeline_set_delay(GST_PIPELINE(pipeline), 0);
     gst_pipeline_auto_clock(GST_PIPELINE(pipeline));
 
-    ximagesrc  = gst_element_factory_make("ximagesrc",     "src");
+    // 1. ximagesrc capturando X11
+    ximagesrc = gst_element_factory_make("ximagesrc", "src");
     g_object_set(ximagesrc,
              "use-damage", FALSE,
              "do-timestamp", TRUE,
              "startx", 0, "starty", 0,
              "endx", 1919, "endy", 1079,
-             /* propiedad 'sync' removida porque no existe en algunas versiones de ximagesrc */
              "show-pointer", TRUE,
              NULL);
 
+    // 2. Filtro de FPS para evitar que ximagesrc sature el bus intentando leer a 100+ fps
+    capsfilter = gst_element_factory_make("capsfilter", "framerate_filter");
+    GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=30/1");
+    g_object_set(capsfilter, "caps", caps, NULL);
+    gst_caps_unref(caps);
+
+    // 3. Cola con buffer ligeramente mayor para absorber retrasos de hardware
     queue_elem = gst_element_factory_make("queue", "queue");
     g_object_set(queue_elem,
-        "leaky", 2,
-        "max-size-buffers", 1,
+        "leaky", 2, // Downstream (descarta lo viejo si el encoder se retrasa)
+        "max-size-buffers", 3, // Aumentado a 3 para suavizar micro-tirones
         "max-size-time", 0,
         "max-size-bytes", 0,
         NULL);
 
-    GstElement *videoconvert = gst_element_factory_make("videoconvert", "videoconvert");
+    // 4. EL CAMBIO PRINCIPAL: vaapipostproc reemplaza a videoconvert
+    postproc = gst_element_factory_make("vaapipostproc", "postproc");
 
-    encoder    = gst_element_factory_make("vaapih264enc",   "encoder");
+    // 5. Encoder VA-API
+    encoder = gst_element_factory_make("vaapih264enc", "encoder");
     if (!encoder) {
-        /* fallback razonable: x264enc si no hay vaapi */
+        g_print("⚠️ No se encontró vaapih264enc, usando x264enc de reserva\n");
         encoder = gst_element_factory_make("x264enc", "encoder");
+    } else {
+        // vaapih264enc usa kilobits por defecto (ej. 2000 = 2 Mbps)
+        g_object_set(encoder, "bitrate", 2000, NULL);
     }
-    g_object_set(encoder,
-        "bitrate", 0, /* auto / cambiar si se desea */
-        NULL);
 
-    parser_elem= gst_element_factory_make("h264parse",      "parser");
+    parser_elem = gst_element_factory_make("h264parse", "parser");
 
-    payloader  = gst_element_factory_make("rtph264pay",     "payloader");
+    payloader = gst_element_factory_make("rtph264pay", "payloader");
     g_object_set(payloader,
              "config-interval", 1,
              "pt", 96,
              NULL);
 
-    webrtc     = gst_element_factory_make("webrtcbin",      "webrtc");
+    webrtc = gst_element_factory_make("webrtcbin", "webrtc");
     g_object_set(webrtc,
              "latency", 0,
              "stun-server", "stun://stun.l.google.com:19302",
              NULL);
 
-
-    if (!pipeline || !ximagesrc || !queue_elem ||
-        !encoder || !parser_elem || !payloader || !webrtc) {
-        g_printerr("❌ Error al crear elementos\n");
+    if (!pipeline || !ximagesrc || !capsfilter || !queue_elem ||
+        !postproc || !encoder || !parser_elem || !payloader || !webrtc) {
+        g_printerr("❌ Error al instanciar elementos. Verifica que gstreamer1.0-vaapi esté instalado.\n");
         return -1;
     }
 
-    // 3) Señal para detectar sub-elementos añadidos (sólo para logging)
-    g_signal_connect(pipeline, "element-added",
-                     G_CALLBACK(on_element_added), NULL);
+    g_signal_connect(pipeline, "element-added", G_CALLBACK(on_element_added), NULL);
 
-    // 5) Montar el pipeline
+    // Ensamblaje del pipeline
     gst_bin_add_many(GST_BIN(pipeline),
-                 ximagesrc, queue_elem, videoconvert,
+                 ximagesrc, capsfilter, queue_elem, postproc,
                  encoder, parser_elem, payloader, webrtc,
                  NULL);
-    if (!gst_element_link(ximagesrc, queue_elem) ||
-        !gst_element_link(queue_elem, videoconvert) ||
-        !gst_element_link(videoconvert, encoder) ||
-        !gst_element_link(encoder, parser_elem) ||
-        !gst_element_link(parser_elem, payloader) ||
-        !gst_element_link(payloader, webrtc)) {
-        g_printerr("❌ Error al enlazar elementos\n");
+
+    if (!gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, payloader, webrtc, NULL)) {
+        g_printerr("❌ Error al enlazar elementos (link_many falló)\n");
         return -1;
     }
 
-    /* --- Enviar STREAM_START con el stream_id en el pad 'src' de ximagesrc
-       usando la versión gst_event_new_stream_start(const gchar *stream_id) */
+    // Gestionar el stream_id en el pad de ximagesrc
     GstPad *xsrc_pad = gst_element_get_static_pad(ximagesrc, "src");
     if (xsrc_pad) {
         GstEvent *start = gst_event_new_stream_start(stream_id);
@@ -307,41 +296,31 @@ int main(int argc, char *argv[]) {
             g_print("✅ STREAM_START enviado con stream_id %s\n", stream_id);
         }
         gst_object_unref(xsrc_pad);
-    } else {
-        g_warning("⚠️ No encontré pad 'src' en ximagesrc para enviar STREAM_START");
     }
 
-    // 6) Configurar reloj y start-time (antes de PLAYING)
     GstClock *clock = gst_system_clock_obtain();
     gst_pipeline_use_clock(GST_PIPELINE(pipeline), clock);
     gst_element_set_start_time(pipeline, gst_clock_get_time(clock));
     gst_object_unref(clock);
 
-    // 7) Señales WebRTC
     g_signal_connect(webrtc, "on-negotiation-needed", G_CALLBACK(on_negotiation_needed), NULL);
     g_signal_connect(webrtc, "on-ice-candidate",      G_CALLBACK(on_ice_candidate),      NULL);
 
-    // 8) Poner pipeline en PLAYING
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
     g_print("▶️ Pipeline en PLAYING\n");
 
-    // Espera breve para que se negocien caps
-    g_usleep(200 * 1000); // 200 ms
+    g_usleep(200 * 1000); 
 
-    // Imprimir profile y level actuales
     print_h264_caps_info(parser_elem);
 
-    // 9) Conexión al servidor de señalización
     SoupSession *sess = soup_session_new_with_options(NULL);
     SoupMessage *msg = soup_message_new("GET", "ws://localhost:8000/ws");
     soup_session_websocket_connect_async(
         sess, msg, NULL, NULL, G_PRIORITY_DEFAULT,
         NULL, (GAsyncReadyCallback)on_ws_connected, NULL);
 
-    // 10) Bucle principal
     g_main_loop_run(loop);
 
-    // Limpieza
     gst_element_set_state(pipeline, GST_STATE_NULL);
     gst_object_unref(pipeline);
     g_main_loop_unref(loop);
