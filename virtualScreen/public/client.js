@@ -45,17 +45,21 @@ function connect() {
 		}
 
 		if (!pc) {
-			pc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+			pc = new RTCPeerConnection({
+				iceServers: [{urls: 'stun:stun.l.google.com:19302'}],
+				bundlePolicy: 'max-bundle',
+				rtcpMuxPolicy: 'require',
+			});
 
 			// ...después de crear pc...
 			let lastPacketsLost = 0;
 			let lastTimestamp = 0;
+			let lastFramesDropped = 0;
 			let goodCount = 0; // fuera de la función, para llevar el control
 
 			async function monitorQuality() {
 				if (!pc) return;
 				const stats = await pc.getStats();
-				let lostNow = 0;
 				let currentRTT = 0;
 
 				stats.forEach((report) => {
@@ -64,30 +68,36 @@ function connect() {
 						currentRTT = (report.currentRoundTripTime || 0) * 1000; // Convertir a ms
 					}
 
-					// 2. Monitoreo de Pérdida de Paquetes
+					// 2. Monitoreo de Red y Rendimiento de Decodificación (CPU)
 					if (report.type === 'inbound-rtp' && report.kind === 'video') {
 						const packetsLost = report.packetsLost || 0;
+						const framesDropped = report.framesDropped || 0;
 						const timestamp = report.timestamp || 0;
 
 						if (lastTimestamp && timestamp > lastTimestamp) {
 							const lost = packetsLost - lastPacketsLost;
-							lostNow = lost;
+							const dropped = framesDropped - lastFramesDropped;
 
-							// Lógica combinada: Bajar si hay mucha pérdida O mucha latencia
-							if (lost > 10 || currentRTT > 150) {
+							// Lógica combinada: Bajar si hay:
+							// - Mucha pérdida de red (lost > 10)
+							// - Mucha latencia (RTT > 150ms)
+							// - Dificultad de procesamiento (dropped > 3 frames en 1 seg)
+							if (lost > 10 || currentRTT > 150 || dropped > 3) {
 								if (ws.readyState === WebSocket.OPEN) {
-									ws.send(JSON.stringify({type: 'quality', action: 'lower'}));
-									console.log(`⚠️ Bajando calidad: Pérdida=${lost}, RTT=${currentRTT.toFixed(1)}ms`);
+									let motivo = dropped > 3 ? 'CPU/Decodificación' : lost > 10 ? 'Pérdida Red' : 'Latencia';
+									ws.send(JSON.stringify({type: 'quality', action: 'lower', reason: motivo}));
+									console.log(`⚠️ Bajando calidad por ${motivo}: Lost=${lost}, RTT=${currentRTT.toFixed(1)}ms, Dropped=${dropped}`);
 								}
 								goodCount = 0;
 							}
-							// Subir solo si AMBOS son excelentes
-							else if (lost === 0 && currentRTT < 80) {
+							// Subir solo si TODO es excelente
+							else if (lost === 0 && currentRTT < 80 && dropped === 0) {
 								goodCount++;
-								if (goodCount > 10) {
+								if (goodCount > 15) {
+									// Esperamos 15 segundos de estabilidad
 									if (ws.readyState === WebSocket.OPEN) {
-										ws.send(JSON.stringify({type: 'quality', action: 'raise'}));
-										console.log(`✅ Subiendo calidad: RTT estable en ${currentRTT.toFixed(1)}ms`);
+										ws.send(JSON.stringify({type: 'quality', action: 'raise', reason: 'Sistema y red estables'}));
+										console.log(`✅ Subiendo calidad: Sistema y red estables`);
 									}
 									goodCount = 0;
 								}
@@ -96,10 +106,11 @@ function connect() {
 							}
 						}
 						lastPacketsLost = packetsLost;
+						lastFramesDropped = framesDropped;
 						lastTimestamp = timestamp;
 					}
 				});
-				setTimeout(monitorQuality, 2000);
+				setTimeout(monitorQuality, 1000);
 			}
 
 			// Manejar el ACK del servidor para ver el bitrate actual en consola
@@ -112,6 +123,11 @@ function connect() {
 
 			// Llama a monitorQuality cuando el stream esté activo
 			pc.ontrack = (e) => {
+				const track = e.streams[0].getVideoTracks()[0];
+				if (track && 'playoutDelayHint' in track) {
+					track.playoutDelayHint = 0; // Intenta eliminar el buffer de jitter
+					console.log('⏱️ PlayoutDelayHint configurado a 0');
+				}
 				if (video && e.streams[0]) {
 					video.srcObject = e.streams[0];
 					video.autoplay = true;

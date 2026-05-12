@@ -27,12 +27,14 @@ static GstElement *pipeline, *ximagesrc, *capsfilter, *queue_elem, *postproc, *e
 static SoupWebsocketConnection *websocket = NULL;
 static GHashTable *clients; 
 static Geometry prev_geom = {0,0,0,0};
+static gint current_fps = 60; // FPS iniciales
 
 // --- PROTOTIPOS (Para evitar errores de orden) ---
 static void on_offer_created(GstPromise *promise, gpointer user_data);
 static void on_ice_candidate(GstElement *webrtcbin, guint mline, gchar *candidate, gpointer user_data);
 static WebRTCClient* create_client(const gchar *peer_id);
 static void remove_client(const gchar *peer_id);
+static void adjust_framerate(gint delta);
 
 // --- UTILIDADES ---
 static GstPadProbeReturn on_stream_start_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
@@ -188,9 +190,22 @@ static void adjust_bitrate(gint delta) {
     if (!encoder) return;
     gint current_bitrate;
     g_object_get(encoder, "bitrate", &current_bitrate, NULL);
-    gint new_bitrate = CLAMP(current_bitrate + delta, 1000, 20000);
+    // Aumentamos el mínimo a 4000kbps (4Mbps) para 60fps, máximo 20Mbps
+    gint new_bitrate = CLAMP(current_bitrate + delta, 4000, 20000);
     g_object_set(encoder, "bitrate", new_bitrate, NULL);
     g_print("Bitrate ajustado a: %d kbps\n", new_bitrate);
+}
+
+static void adjust_framerate(gint delta) {
+    if (!capsfilter) return;
+    gint new_fps = CLAMP(current_fps + delta, 30, 60);
+    if (new_fps == current_fps) return;
+
+    current_fps = new_fps;
+    GstCaps *new_caps = gst_caps_from_string(g_strdup_printf("video/x-raw,framerate=%d/1,format=BGRx", current_fps));
+    g_object_set(capsfilter, "caps", new_caps, NULL);
+    gst_caps_unref(new_caps);
+    g_print("🎬 Framerate adaptativo: %d fps\n", current_fps);
 }
 
 static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType type, GBytes *message, gpointer user_data) {
@@ -221,11 +236,33 @@ static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType t
         }
     } else if (g_strcmp0(m_type, "quality") == 0) {
         const gchar *action = json_object_get_string_member(msg, "action");
-        if (g_strcmp0(action, "raise") == 0) adjust_bitrate(1000);
-        else if (g_strcmp0(action, "lower") == 0) adjust_bitrate(-1000);
+        const gchar *reason = json_object_has_member(msg, "reason") ? json_object_get_string_member(msg, "reason") : "unknown";
+        
+        gint current_bitrate;
+        g_object_get(encoder, "bitrate", &current_bitrate, NULL);
+
+        if (g_strcmp0(action, "raise") == 0) {
+            // Si hay más de 200kb por frame, subimos fluidez (FPS) en lugar de bitrate
+            if ((current_bitrate / current_fps) >= 200) {
+                adjust_framerate(10);
+            } else {
+                adjust_bitrate(1000);
+            }
+        } 
+        else if (g_strcmp0(action, "lower") == 0) {
+            // Si ya estamos al mínimo de bitrate (4000kbps), bajamos FPS para reducir carga CPU en cliente
+            if (current_bitrate <= 4000) {
+                adjust_framerate(-10);
+            } else {
+                if (g_strcmp0(reason, "CPU/Decodificación") == 0) adjust_bitrate(-2000);
+                else adjust_bitrate(-1000);
+            }
+        }
         
         JsonObject *resp = json_object_new();
         json_object_set_string_member(resp, "type", "quality_ack");
+        g_object_get(encoder, "bitrate", &current_bitrate, NULL);
+        json_object_set_int_member(resp, "bitrate", current_bitrate);
         gchar *m = object_to_json(resp);
         soup_websocket_connection_send_text(conn, m);
         g_free(m); json_object_unref(resp);
@@ -272,12 +309,12 @@ int main(int argc, char *argv[]) {
     if (encoder) {
         // Para VAAPI: bitrate bajo y sin frames B
         // g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, NULL);
-        g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, "keyframe-period", 15, NULL);
+        g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, "keyframe-period", 5, NULL); // Reducido para facilitar decodificación en clientes débiles
     } else {
         encoder = gst_element_factory_make("x264enc", "enc");
         if (encoder) {
             // CRÍTICO para latencia en software: tune=zerolatency y speed-preset=ultrafast
-            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 1, "bitrate", 8000, NULL);
+            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 0, "bitrate", 8000, NULL); // Cambiado a 'ultrafast' para menor carga de CPU en cliente
         }
     }
 
