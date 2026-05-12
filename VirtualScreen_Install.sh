@@ -31,6 +31,21 @@ run_as_root() {
 
 log "=== Instalando VirtualScreen ==="
 
+log "=== Compilando webrtc_screen ==="
+gcc webrtc_screen.c -o webrtc_screen \
+  $(pkg-config --cflags --libs \
+     gstreamer-1.0 \
+     gstreamer-webrtc-1.0 \
+     gstreamer-sdp-1.0 \
+     gstreamer-rtp-1.0 \
+     libsoup-3.0 \
+     json-glib-1.0 \
+     x11 \
+     xrandr) || error_exit "Fallo en la compilación de webrtc_screen.c"
+
+# Mover el binario compilado a la carpeta virtualScreen
+mv webrtc_screen virtualScreen/webrtc_screen || error_exit "No se pudo mover el binario a virtualScreen/"
+
 # Un solo bloque root para todo lo que requiere permisos
 ROOT_SCRIPT=$(mktemp)
 cat >"$ROOT_SCRIPT" <<EOF
@@ -64,12 +79,5 @@ Categories=Utility;
 EODESK
 chmod a+rwx "$DESKTOP_FILE"
 log "Acceso directo creado: $DESKTOP_FILE"
-
-# Crear enlace simbólico en el escritorio del usuario (no requiere root)
-if [ -L "$SYMLINK" ] || [ -e "$SYMLINK" ]; then
-	rm -f "$SYMLINK"
-fi
-ln -s "$DESKTOP_FILE" "$SYMLINK"
-log "Enlace simbólico creado en el escritorio."
 
 log "=== Instalación completada ==="

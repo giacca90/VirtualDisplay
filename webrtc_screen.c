@@ -12,31 +12,45 @@
 #include <glib.h>
 
 // --- ESTRUCTURAS ---
+// Estructura para almacenar la geometría (posición y tamaño) de la pantalla.
 typedef struct { int x,y,w,h; } Geometry;
 
+// Estructura para mantener el estado de cada cliente WebRTC conectado.
 typedef struct {
-    gchar *peer_id;
-    GstElement *queue;
-    GstElement *webrtcbin;
-    GstPad *tee_pad;
+    gchar *peer_id;        // ID único del cliente (peer).
+    GstElement *queue;     // Elemento de cola GStreamer para el cliente.
+    GstElement *webrtcbin; // Elemento WebRTCBin para la comunicación con el cliente.
+    GstPad *tee_pad;       // Pad del elemento 'tee' para enviar datos a este cliente.
 } WebRTCClient;
 
 // --- GLOBALES ---
+// Bucle principal de GLib para manejar eventos.
 static GMainLoop *loop;
+// Elementos GStreamer globales de la pipeline.
 static GstElement *pipeline, *ximagesrc, *capsfilter, *queue_elem, *postproc, *encoder, *parser_elem, *payloader, *tee;
+// Conexión WebSocket para la señalización.
 static SoupWebsocketConnection *websocket = NULL;
+// Tabla hash para almacenar los clientes WebRTC conectados.
 static GHashTable *clients; 
+// Geometría de la pantalla virtual capturada previamente.
 static Geometry prev_geom = {0,0,0,0};
+// Frecuencia de cuadros actual (FPS).
 static gint current_fps = 60; // FPS iniciales
 
 // --- PROTOTIPOS (Para evitar errores de orden) ---
+// Callback que se ejecuta cuando se crea una oferta SDP.
 static void on_offer_created(GstPromise *promise, gpointer user_data);
 static void on_ice_candidate(GstElement *webrtcbin, guint mline, gchar *candidate, gpointer user_data);
+// Crea un nuevo cliente WebRTC y lo añade a la tabla de clientes.
 static WebRTCClient* create_client(const gchar *peer_id);
+// Elimina un cliente WebRTC de la tabla de clientes.
 static void remove_client(const gchar *peer_id);
+// Ajusta la velocidad de cuadros (framerate) de la captura de video.
 static void adjust_framerate(gint delta);
 
 // --- UTILIDADES ---
+// Función de sondeo (probe) para manejar el evento GST_EVENT_STREAM_START.
+// Se usa para asegurar que el stream se inicia con el ID correcto.
 static GstPadProbeReturn on_stream_start_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
     GstEvent *event = gst_pad_probe_info_get_event(info);
     if (GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
@@ -48,6 +62,7 @@ static GstPadProbeReturn on_stream_start_probe(GstPad *pad, GstPadProbeInfo *inf
     return GST_PAD_PROBE_OK;
 }
 
+// Convierte un objeto JsonObject a una cadena JSON.
 static gchar *object_to_json(JsonObject *obj) {
     JsonNode *root = json_node_alloc();
     json_node_init_object(root, obj);
@@ -60,12 +75,14 @@ static gchar *object_to_json(JsonObject *obj) {
 }
 
 // --- LÓGICA DE PANTALLA VIRTUAL ---
+// Función para disparar la renegociación de SDP para un cliente específico.
 static void trigger_renegotiation(gpointer key, gpointer value, gpointer user_data) {
     WebRTCClient *client = (WebRTCClient *)value;
     GstPromise *p = gst_promise_new_with_change_func(on_offer_created, client, NULL);
     g_signal_emit_by_name(client->webrtcbin, "create-offer", NULL, p);
 }
 
+// Comprueba si la geometría de la pantalla virtual ha cambiado y ajusta ximagesrc si es necesario.
 static gboolean check_monitor(gpointer _data){
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) return TRUE;
@@ -97,6 +114,7 @@ static gboolean check_monitor(gpointer _data){
 }
 
 // --- CALLBACKS WEBRTC ---
+// Se llama cuando GStreamer ha creado una oferta SDP.
 static void on_offer_created(GstPromise *promise, gpointer user_data) {
     WebRTCClient *client = (WebRTCClient *)user_data;
     GstWebRTCSessionDescription *offer = NULL;
@@ -124,6 +142,7 @@ static void on_offer_created(GstPromise *promise, gpointer user_data) {
     gst_webrtc_session_description_free(offer);
 }
 
+// Se llama cuando GStreamer ha encontrado un candidato ICE.
 static void on_ice_candidate(GstElement *webrtcbin, guint mline, gchar *candidate, gpointer user_data) {
     WebRTCClient *client = (WebRTCClient *)user_data;
     JsonObject *j = json_object_new();
@@ -137,6 +156,7 @@ static void on_ice_candidate(GstElement *webrtcbin, guint mline, gchar *candidat
 }
 
 // --- GESTIÓN DE CLIENTES ---
+// Crea un nuevo cliente WebRTC, inicializa sus elementos GStreamer y lo añade a la pipeline.
 static WebRTCClient* create_client(const gchar *peer_id) {
     WebRTCClient *client = g_new0(WebRTCClient, 1);
     client->peer_id = g_strdup(peer_id);
@@ -173,6 +193,7 @@ static WebRTCClient* create_client(const gchar *peer_id) {
     return client;
 }
 
+// Elimina un cliente WebRTC existente, liberando sus recursos GStreamer.
 static void remove_client(const gchar *peer_id) {
     gpointer key, value;
     if (g_hash_table_lookup_extended(clients, peer_id, &key, &value)) {
@@ -186,6 +207,7 @@ static void remove_client(const gchar *peer_id) {
     }
 }
 
+// Ajusta la tasa de bits (bitrate) del codificador de video.
 static void adjust_bitrate(gint delta) {
     if (!encoder) return;
     gint current_bitrate;
@@ -196,6 +218,7 @@ static void adjust_bitrate(gint delta) {
     g_print("Bitrate ajustado a: %d kbps\n", new_bitrate);
 }
 
+// Ajusta la velocidad de cuadros (framerate) del filtro de caps.
 static void adjust_framerate(gint delta) {
     if (!capsfilter) return;
     gint new_fps = CLAMP(current_fps + delta, 30, 60);
@@ -208,6 +231,7 @@ static void adjust_framerate(gint delta) {
     g_print("🎬 Framerate adaptativo: %d fps\n", current_fps);
 }
 
+// Maneja los mensajes recibidos a través de la conexión WebSocket.
 static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType type, GBytes *message, gpointer user_data) {
     if (type != SOUP_WEBSOCKET_DATA_TEXT) return;
     gsize size;
@@ -275,6 +299,7 @@ static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType t
     g_object_unref(parser);
 }
 
+// Se llama cuando la conexión WebSocket se ha establecido.
 static void on_ws_connected(SoupSession *s, GAsyncResult *res, gpointer user_data) {
     websocket = soup_session_websocket_connect_finish(s, res, NULL);
     if (websocket) {
@@ -285,20 +310,29 @@ static void on_ws_connected(SoupSession *s, GAsyncResult *res, gpointer user_dat
     }
 }
 
-// --- MAIN ---
+// --- FUNCIÓN PRINCIPAL ---
 int main(int argc, char *argv[]) {
+    // Configura la localización para manejo de caracteres.
     setlocale(LC_ALL, "");
+    // Inicializa GStreamer.
     gst_init(&argc, &argv);
+    // Crea un nuevo bucle principal de GLib.
     loop = g_main_loop_new(NULL, FALSE);
     
-    // Hash table con destructores automáticos
+    // Inicializa la tabla hash para almacenar los clientes, con destructores automáticos.
     clients = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 
+    // Crea la pipeline de GStreamer.
     pipeline = gst_pipeline_new("pipeline");
+    // Elemento para capturar la pantalla X11.
     ximagesrc = gst_element_factory_make("ximagesrc", "src");
+    // Configura ximagesrc para no usar el mecanismo de daño (damage), capturar remotamente,
+    // añadir timestamps y mostrar el puntero del ratón.
     g_object_set(ximagesrc, "use-damage", FALSE, "remote", TRUE, "do-timestamp", TRUE, "show-pointer", TRUE, NULL);
 
+    // Filtro de capacidades para establecer el framerate y el formato de video.
     capsfilter = gst_element_factory_make("capsfilter", "fps");
+    // Crea las capacidades para video raw a 60 FPS en formato BGRx.
     GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=60/1,format=BGRx");
     g_object_set(capsfilter, "caps", caps, NULL); gst_caps_unref(caps);
 

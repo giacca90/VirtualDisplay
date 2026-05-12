@@ -93,8 +93,8 @@ function connect() {
 							// Subir solo si TODO es excelente
 							else if (lost === 0 && currentRTT < 80 && dropped === 0) {
 								goodCount++;
-								if (goodCount > 15) {
-									// Esperamos 15 segundos de estabilidad
+								if (goodCount > 5) {
+									// Esperamos 10 segundos de estabilidad
 									if (ws.readyState === WebSocket.OPEN) {
 										ws.send(JSON.stringify({type: 'quality', action: 'raise', reason: 'Sistema y red estables'}));
 										console.log(`✅ Subiendo calidad: Sistema y red estables`);
