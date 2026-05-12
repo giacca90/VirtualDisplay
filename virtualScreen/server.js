@@ -75,14 +75,6 @@ server.listen(HTTP_PORT, () => {
 		env: {
 			...process.env,
 			GST_DEBUG: '3',
-			// GST_DEBUG: ':3',
-			// GST_DEBUG: 'ximagesrc:4',
-			// GST_DEBUG: 'queue:3',
-			// GST_DEBUG: 'videoconvert:3',
-			// GST_DEBUG: 'vaapih264enc:3,GST_PADS:1'
-			// GST_DEBUG: 'h264parse:3',
-			// GST_DEBUG: 'rtph264pay:3',
-			// GST_debug: 'webrtcbin:3',
 		},
 	});
 

@@ -244,26 +244,29 @@ int main(int argc, char *argv[]) {
     g_object_set(ximagesrc, "use-damage", FALSE, "remote", TRUE, "do-timestamp", TRUE, "show-pointer", TRUE, NULL);
 
     capsfilter = gst_element_factory_make("capsfilter", "fps");
-    GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=30/1,format=BGRx");
+    GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=60/1,format=BGRx");
     g_object_set(capsfilter, "caps", caps, NULL); gst_caps_unref(caps);
 
     queue_elem = gst_element_factory_make("queue", "q_main");
+    g_object_set(queue_elem, "max-size-buffers", 1, "leaky", 2, "flush-on-eos", TRUE, NULL);
     postproc = gst_element_factory_make("vaapipostproc", "pp");
     encoder = gst_element_factory_make("vaapih264enc", "enc");
     if (encoder) {
         // Para VAAPI: bitrate bajo y sin frames B
-        g_object_set(encoder, "max-bframes", 0, "bitrate", 4000, "rate-control", 2, NULL);
+        // g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, NULL);
+        g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, "keyframe-period", 15, NULL);
     } else {
         encoder = gst_element_factory_make("x264enc", "enc");
         if (encoder) {
             // CRÍTICO para latencia en software: tune=zerolatency y speed-preset=ultrafast
-            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 1, "bitrate", 4000, NULL);
+            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 1, "bitrate", 8000, NULL);
         }
     }
 
     parser_elem = gst_element_factory_make("h264parse", "parse");
     payloader = gst_element_factory_make("rtph264pay", "pay");
-    g_object_set(payloader, "config-interval", 1, "pt", 96, "ssrc", 1337, NULL);
+    //g_object_set(payloader, "config-interval", 1, "pt", 96, "ssrc", 1337, NULL);
+    g_object_set(payloader, "config-interval", 1, "pt", 96, "ssrc", 1337, "aggregate-mode", 0, NULL);
 
     GstElement *rtpcaps = gst_element_factory_make("capsfilter", "rtpcaps");
     GstCaps *v_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=96");

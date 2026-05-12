@@ -3,7 +3,7 @@ const video = document.getElementById('stream');
 let pc;
 
 // Conecta y registra
-const ws = new WebSocket(`ws://${location.hostname}:8000/ws`);
+const ws = new WebSocket(`ws://kali.local:8000/ws`);
 ws.addEventListener('open', () => {
 	console.log('🔌 WS abierto, registro client');
 	ws.send(JSON.stringify({type: 'client'}));
