@@ -35,6 +35,17 @@ static WebRTCClient* create_client(const gchar *peer_id);
 static void remove_client(const gchar *peer_id);
 
 // --- UTILIDADES ---
+static GstPadProbeReturn on_stream_start_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    GstEvent *event = gst_pad_probe_info_get_event(info);
+    if (GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
+        GstEvent *new_event = gst_event_new_stream_start((const gchar *)user_data);
+        gst_event_unref(event);
+        info->data = new_event;
+        return GST_PAD_PROBE_REMOVE;
+    }
+    return GST_PAD_PROBE_OK;
+}
+
 static gchar *object_to_json(JsonObject *obj) {
     JsonNode *root = json_node_alloc();
     json_node_init_object(root, obj);
@@ -132,17 +143,19 @@ static WebRTCClient* create_client(const gchar *peer_id) {
     client->webrtcbin = gst_element_factory_make("webrtcbin", NULL);
     g_object_set(client->webrtcbin, "bundle-policy", 3, "latency", 0, NULL);
 
+    // Intentar silenciar webrtcbin/nicesrc (aunque nicesrc es interno, webrtcbin suele propagar)
+    GstPad *w_pad = gst_element_get_static_pad(client->webrtcbin, "src_%u");
+    if (w_pad) {
+        gst_pad_add_probe(w_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, on_stream_start_probe, "webrtc-stream", NULL);
+        gst_object_unref(w_pad);
+    }
+
     gst_bin_add_many(GST_BIN(pipeline), client->queue, client->webrtcbin, NULL);
 
     GstPad *q_src = gst_element_get_static_pad(client->queue, "src");
     GstPad *w_sink = gst_element_request_pad_simple(client->webrtcbin, "sink_%u");
     gst_pad_link(q_src, w_sink);
     gst_object_unref(q_src); gst_object_unref(w_sink);
-
-    GstWebRTCRTPTransceiver *trans = NULL;
-    g_signal_emit_by_name(client->webrtcbin, "add-transceiver", 
-                          GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY, NULL, &trans);
-    if (trans) gst_object_unref(trans);
 
     client->tee_pad = gst_element_request_pad_simple(tee, "src_%u");
     GstPad *q_sink = gst_element_get_static_pad(client->queue, "sink");
@@ -228,19 +241,24 @@ int main(int argc, char *argv[]) {
 
     pipeline = gst_pipeline_new("pipeline");
     ximagesrc = gst_element_factory_make("ximagesrc", "src");
-    g_object_set(ximagesrc, "use-damage", FALSE, "do-timestamp", TRUE, "show-pointer", TRUE, NULL);
+    g_object_set(ximagesrc, "use-damage", FALSE, "remote", TRUE, "do-timestamp", TRUE, "show-pointer", TRUE, NULL);
 
     capsfilter = gst_element_factory_make("capsfilter", "fps");
-    GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=30/1");
+    GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=30/1,format=BGRx");
     g_object_set(capsfilter, "caps", caps, NULL); gst_caps_unref(caps);
 
     queue_elem = gst_element_factory_make("queue", "q_main");
     postproc = gst_element_factory_make("vaapipostproc", "pp");
     encoder = gst_element_factory_make("vaapih264enc", "enc");
     if (encoder) {
+        // Para VAAPI: bitrate bajo y sin frames B
         g_object_set(encoder, "max-bframes", 0, "bitrate", 4000, "rate-control", 2, NULL);
     } else {
         encoder = gst_element_factory_make("x264enc", "enc");
+        if (encoder) {
+            // CRÍTICO para latencia en software: tune=zerolatency y speed-preset=ultrafast
+            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 1, "bitrate", 4000, NULL);
+        }
     }
 
     parser_elem = gst_element_factory_make("h264parse", "parse");
@@ -256,6 +274,11 @@ int main(int argc, char *argv[]) {
 
     gst_bin_add_many(GST_BIN(pipeline), ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, payloader, rtpcaps, tee, NULL);
     gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, payloader, rtpcaps, tee, NULL);
+
+    // Fix para el FIXME de <src> (ximagesrc) usando un probe limpio
+    GstPad *src_pad = gst_element_get_static_pad(ximagesrc, "src");
+    gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, on_stream_start_probe, "desktop-stream", NULL);
+    gst_object_unref(src_pad);
 
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
     g_timeout_add_seconds(1, check_monitor, NULL);
