@@ -184,7 +184,15 @@ static void remove_client(const gchar *peer_id) {
     }
 }
 
-// --- SEÑALIZACIÓN ---
+static void adjust_bitrate(gint delta) {
+    if (!encoder) return;
+    gint current_bitrate;
+    g_object_get(encoder, "bitrate", &current_bitrate, NULL);
+    gint new_bitrate = CLAMP(current_bitrate + delta, 1000, 20000);
+    g_object_set(encoder, "bitrate", new_bitrate, NULL);
+    g_print("Bitrate ajustado a: %d kbps\n", new_bitrate);
+}
+
 static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType type, GBytes *message, gpointer user_data) {
     if (type != SOUP_WEBSOCKET_DATA_TEXT) return;
     gsize size;
@@ -211,6 +219,16 @@ static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType t
             g_signal_emit_by_name(c->webrtcbin, "set-remote-description", ans, NULL);
             gst_webrtc_session_description_free(ans);
         }
+    } else if (g_strcmp0(m_type, "quality") == 0) {
+        const gchar *action = json_object_get_string_member(msg, "action");
+        if (g_strcmp0(action, "raise") == 0) adjust_bitrate(1000);
+        else if (g_strcmp0(action, "lower") == 0) adjust_bitrate(-1000);
+        
+        JsonObject *resp = json_object_new();
+        json_object_set_string_member(resp, "type", "quality_ack");
+        gchar *m = object_to_json(resp);
+        soup_websocket_connection_send_text(conn, m);
+        g_free(m); json_object_unref(resp);
     } else if (g_strcmp0(m_type, "ice") == 0) {
         WebRTCClient *c = g_hash_table_lookup(clients, peer_id);
         if (c) g_signal_emit_by_name(c->webrtcbin, "add-ice-candidate", 

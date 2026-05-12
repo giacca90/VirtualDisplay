@@ -56,29 +56,38 @@ function connect() {
 				if (!pc) return;
 				const stats = await pc.getStats();
 				let lostNow = 0;
+				let currentRTT = 0;
+
 				stats.forEach((report) => {
+					// 1. Monitoreo de Latencia (RTT)
+					if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.writable) {
+						currentRTT = (report.currentRoundTripTime || 0) * 1000; // Convertir a ms
+					}
+
+					// 2. Monitoreo de Pérdida de Paquetes
 					if (report.type === 'inbound-rtp' && report.kind === 'video') {
-						// Detecta pérdida de paquetes
 						const packetsLost = report.packetsLost || 0;
 						const timestamp = report.timestamp || 0;
+
 						if (lastTimestamp && timestamp > lastTimestamp) {
 							const lost = packetsLost - lastPacketsLost;
 							lostNow = lost;
-							if (lost > 10) {
-								// Ajusta el umbral según tu caso
-								// Notifica al servidor que hay pérdidas
+
+							// Lógica combinada: Bajar si hay mucha pérdida O mucha latencia
+							if (lost > 10 || currentRTT > 150) {
 								if (ws.readyState === WebSocket.OPEN) {
 									ws.send(JSON.stringify({type: 'quality', action: 'lower'}));
-									console.log('⚠️ Pérdida detectada, pidiendo bajar calidad');
+									console.log(`⚠️ Bajando calidad: Pérdida=${lost}, RTT=${currentRTT.toFixed(1)}ms`);
 								}
-								goodCount = 0; // reinicia el contador de buena calidad
-							} else if (lost === 0) {
+								goodCount = 0;
+							}
+							// Subir solo si AMBOS son excelentes
+							else if (lost === 0 && currentRTT < 80) {
 								goodCount++;
 								if (goodCount > 10) {
-									// 10 ciclos (~20s sin pérdidas)
 									if (ws.readyState === WebSocket.OPEN) {
 										ws.send(JSON.stringify({type: 'quality', action: 'raise'}));
-										console.log('✅ Sin pérdidas, pidiendo subir calidad');
+										console.log(`✅ Subiendo calidad: RTT estable en ${currentRTT.toFixed(1)}ms`);
 									}
 									goodCount = 0;
 								}
@@ -90,8 +99,16 @@ function connect() {
 						lastTimestamp = timestamp;
 					}
 				});
-				setTimeout(monitorQuality, 2000); // cada 2 segundos
+				setTimeout(monitorQuality, 2000);
 			}
+
+			// Manejar el ACK del servidor para ver el bitrate actual en consola
+			ws.addEventListener('message', (ev) => {
+				const msg = JSON.parse(ev.data);
+				if (msg.type === 'quality_ack') {
+					console.log(`📊 Bitrate actual del servidor: ${msg.bitrate} kbps`);
+				}
+			});
 
 			// Llama a monitorQuality cuando el stream esté activo
 			pc.ontrack = (e) => {
