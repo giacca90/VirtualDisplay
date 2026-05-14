@@ -51,16 +51,6 @@ static void adjust_framerate(gint delta);
 // --- UTILIDADES ---
 // Función de sondeo (probe) para manejar el evento GST_EVENT_STREAM_START.
 // Se usa para asegurar que el stream se inicia con el ID correcto.
-static GstPadProbeReturn on_stream_start_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
-    GstEvent *event = gst_pad_probe_info_get_event(info);
-    if (GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
-        GstEvent *new_event = gst_event_new_stream_start((const gchar *)user_data);
-        gst_event_unref(event);
-        info->data = new_event;
-        return GST_PAD_PROBE_REMOVE;
-    }
-    return GST_PAD_PROBE_OK;
-}
 
 // Convierte un objeto JsonObject a una cadena JSON.
 static gchar *object_to_json(JsonObject *obj) {
@@ -170,14 +160,6 @@ static WebRTCClient* create_client(const gchar *peer_id) {
         NULL);
     client->webrtcbin = gst_element_factory_make("webrtcbin", NULL);
     g_object_set(client->webrtcbin, "bundle-policy", 3, "latency", 0, NULL);
-
-    // Intentar silenciar webrtcbin/nicesrc (aunque nicesrc es interno, webrtcbin suele propagar)
-    GstPad *w_pad = gst_element_get_static_pad(client->webrtcbin, "src_%u");
-    if (w_pad) {
-        gst_pad_add_probe(w_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, on_stream_start_probe, "webrtc-stream", NULL);
-        gst_object_unref(w_pad);
-    }
-
     gst_bin_add_many(GST_BIN(pipeline), client->queue, client->webrtcbin, NULL);
 
     GstPad *q_src = gst_element_get_static_pad(client->queue, "src");
@@ -357,19 +339,34 @@ int main(int argc, char *argv[]) {
     if (encoder) {
         // Para VAAPI: bitrate bajo y sin frames B
         // g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, NULL);
-        g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, "keyframe-period", 5, NULL); // Reducido para facilitar decodificación en clientes débiles
+        g_object_set(encoder, 
+            "max-bframes", 0, 
+            "bitrate", 9000, 
+            "rate-control", 2, 
+            "keyframe-period", 5,
+             NULL); // Reducido para facilitar decodificación en clientes débiles
     } else {
         encoder = gst_element_factory_make("x264enc", "enc");
         if (encoder) {
             // CRÍTICO para latencia en software: tune=zerolatency y speed-preset=ultrafast
-            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 0, "bitrate", 8000, "threads", 1, NULL); // Cambiado a 'ultrafast' para menor carga de CPU en cliente
+            g_object_set(encoder,
+                 "tune", 0x00000004, 
+                 "speed-preset", 0, 
+                 "bitrate", 8000, 
+                 "threads", 1, 
+                 NULL); // Cambiado a 'ultrafast' para menor carga de CPU en cliente
         }
     }
 
     parser_elem = gst_element_factory_make("h264parse", "parse");
     payloader = gst_element_factory_make("rtph264pay", "pay");
     //g_object_set(payloader, "config-interval", 1, "pt", 96, "ssrc", 1337, NULL);
-    g_object_set(payloader, "config-interval", 1, "pt", 96, "ssrc", 1337, "aggregate-mode", 0, NULL);
+    g_object_set(payloader,
+         "config-interval", 1,
+          "pt", 96, 
+          "ssrc", 1337, 
+          "aggregate-mode", 
+          0, NULL);
 
     GstElement *rtpcaps = gst_element_factory_make("capsfilter", "rtpcaps");
     GstCaps *v_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=96");
@@ -380,11 +377,6 @@ int main(int argc, char *argv[]) {
 
     gst_bin_add_many(GST_BIN(pipeline), ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, payloader, rtpcaps, tee, NULL);
     gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, payloader, rtpcaps, tee, NULL);
-
-    // Fix para el FIXME de <src> (ximagesrc) usando un probe limpio
-    GstPad *src_pad = gst_element_get_static_pad(ximagesrc, "src");
-    gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, on_stream_start_probe, "desktop-stream", NULL);
-    gst_object_unref(src_pad);
 
     // Inicializar geometría antes de empezar
     check_monitor(NULL);
