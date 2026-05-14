@@ -2,6 +2,7 @@
 const video = document.getElementById('stream');
 const container = document.getElementById('container');
 let pc;
+let peerId = null;
 const info = document.getElementById('info');
 let ws;
 
@@ -51,6 +52,9 @@ function connect() {
 				rtcpMuxPolicy: 'require',
 			});
 
+			// Forzamos la recepción de video para evitar que el navegador genere un SDP vacío
+			pc.addTransceiver('video', {direction: 'recvonly'});
+
 			// ...después de crear pc...
 			let lastPacketsLost = 0;
 			let lastTimestamp = 0;
@@ -85,7 +89,7 @@ function connect() {
 							if (lost > 10 || currentRTT > 150 || dropped > 3) {
 								if (ws.readyState === WebSocket.OPEN) {
 									let motivo = dropped > 3 ? 'CPU/Decodificación' : lost > 10 ? 'Pérdida Red' : 'Latencia';
-									ws.send(JSON.stringify({type: 'quality', action: 'lower', reason: motivo}));
+									ws.send(JSON.stringify({type: 'quality', action: 'lower', reason: motivo, peer_id: peerId}));
 									console.log(`⚠️ Bajando calidad por ${motivo}: Lost=${lost}, RTT=${currentRTT.toFixed(1)}ms, Dropped=${dropped}`);
 								}
 								goodCount = 0;
@@ -96,7 +100,7 @@ function connect() {
 								if (goodCount > 5) {
 									// Esperamos 10 segundos de estabilidad
 									if (ws.readyState === WebSocket.OPEN) {
-										ws.send(JSON.stringify({type: 'quality', action: 'raise', reason: 'Sistema y red estables'}));
+										ws.send(JSON.stringify({type: 'quality', action: 'raise', reason: 'Sistema y red estables', peer_id: peerId}));
 										console.log(`✅ Subiendo calidad: Sistema y red estables`);
 									}
 									goodCount = 0;
@@ -167,6 +171,7 @@ function connect() {
 							type: 'ice',
 							sdpMLineIndex: e.candidate.sdpMLineIndex,
 							candidate: e.candidate.candidate,
+							peer_id: peerId,
 						}),
 					);
 					console.log('ICE candidate enviado:', e.candidate);
@@ -174,8 +179,9 @@ function connect() {
 			};
 		}
 		if (msg.type === 'ack' && msg.role === 'client') {
-			ws.send(JSON.stringify({type: 'ready'}));
-			console.log('📨 Enviado: ready');
+			peerId = msg.peer_id;
+			ws.send(JSON.stringify({type: 'ready', peer_id: peerId}));
+			console.log('📨 Enviado: ready', {peer_id: peerId});
 		}
 
 		if (msg.type === 'offer') {
@@ -184,7 +190,7 @@ function connect() {
 			const answer = await pc.createAnswer();
 			await pc.setLocalDescription(answer);
 			console.log('▶️ Enviando answer');
-			ws.send(JSON.stringify({type: 'answer', sdp: pc.localDescription.sdp}));
+			ws.send(JSON.stringify({type: 'answer', sdp: pc.localDescription.sdp, peer_id: peerId}));
 		} else if (msg.type === 'ice' && msg.candidate) {
 			console.log('▶️ Agregando ICE candidate');
 			await pc.addIceCandidate(

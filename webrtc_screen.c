@@ -257,6 +257,9 @@ static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType t
         g_usleep(100000); 
         GstPromise *p = gst_promise_new_with_change_func(on_offer_created, c, NULL);
         g_signal_emit_by_name(c->webrtcbin, "create-offer", NULL, p);
+    } else if (g_strcmp0(m_type, "remove") == 0) {
+        remove_client(peer_id);
+        g_print("🗑️ Cliente eliminado por orden del servidor: %s\n", peer_id);
     } else if (g_strcmp0(m_type, "answer") == 0) {
         WebRTCClient *c = g_hash_table_lookup(clients, peer_id);
         if (c) {
@@ -355,31 +358,40 @@ int main(int argc, char *argv[]) {
     postproc = gst_element_factory_make("vaapipostproc", "pp");
     encoder = gst_element_factory_make("vaapih264enc", "enc");
     if (encoder) {
-        // Para VAAPI: bitrate bajo y sin frames B
-        // g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, NULL);
-        g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, "keyframe-period", 5, NULL); // Reducido para facilitar decodificación en clientes débiles
+        // VAAPI: Forzamos baseline quitando frames B y fijando el periodo de keyframes
+        g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, "keyframe-period", 5, NULL);
     } else {
         encoder = gst_element_factory_make("x264enc", "enc");
         if (encoder) {
-            // CRÍTICO para latencia en software: tune=zerolatency y speed-preset=ultrafast
-            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 0, "bitrate", 8000, "threads", 1, NULL); // Cambiado a 'ultrafast' para menor carga de CPU en cliente
+            // x264enc: tune=zerolatency(4), speed-preset=ultrafast(0)
+            g_object_set(encoder, "tune", 4, "speed-preset", 0, "bitrate", 8000, "threads", 4, NULL);
         }
     }
 
     parser_elem = gst_element_factory_make("h264parse", "parse");
+    // El parser es el encargado de extraer los SPS/PPS y meterlos en las CAPS como 'codec_data'
+    // Para eso necesitamos forzar el formato 'avc' y alineación 'au' justo después.
+
+    GstElement *h264caps = gst_element_factory_make("capsfilter", "h264caps");
+    GstCaps *h_caps = gst_caps_from_string("video/x-h264,stream-format=avc,alignment=au,profile=constrained-baseline");
+    g_object_set(h264caps, "caps", h_caps, NULL);
+    gst_caps_unref(h_caps);
+
     payloader = gst_element_factory_make("rtph264pay", "pay");
-    //g_object_set(payloader, "config-interval", 1, "pt", 96, "ssrc", 1337, NULL);
-    g_object_set(payloader, "config-interval", 1, "pt", 96, "ssrc", 1337, "aggregate-mode", 0, NULL);
+    // config-interval=-1 para que rtph264pay use el codec_data de las caps
+    g_object_set(payloader, "config-interval", -1, "pt", 96, "packetization-mode", 1, NULL);
 
     GstElement *rtpcaps = gst_element_factory_make("capsfilter", "rtpcaps");
-    GstCaps *v_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=96");
+    // Quitamos el profile-level-id manual para evitar errores de concordancia. 
+    // El navegador lo detectará del stream AVC que acabamos de forzar.
+    GstCaps *v_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=96,packetization-mode=(string)1");
     g_object_set(rtpcaps, "caps", v_caps, NULL); gst_caps_unref(v_caps);
 
     tee = gst_element_factory_make("tee", "tee");
     g_object_set(tee, "allow-not-linked", TRUE, NULL); 
 
-    gst_bin_add_many(GST_BIN(pipeline), ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, payloader, rtpcaps, tee, NULL);
-    gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, payloader, rtpcaps, tee, NULL);
+    gst_bin_add_many(GST_BIN(pipeline), ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, rtpcaps, tee, NULL);
+    gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, rtpcaps, tee, NULL);
 
     // Fix para el FIXME de <src> (ximagesrc) usando un probe limpio
     GstPad *src_pad = gst_element_get_static_pad(ximagesrc, "src");

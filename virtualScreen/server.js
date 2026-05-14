@@ -1,6 +1,7 @@
 const express = require('express');
 const os = require('node:os');
 const {spawn} = require('node:child_process');
+const crypto = require('node:crypto');
 const WebSocket = require('ws');
 const http = require('node:http');
 const path = require('node:path');
@@ -11,7 +12,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({server, path: '/ws'});
 
-let peer = null; // cliente navegador
+const peers = new Map(); // múltiples clientes navegador
 let gstreamer = null; // cliente GStreamer
 
 wss.on('connection', (ws) => {
@@ -21,17 +22,21 @@ wss.on('connection', (ws) => {
 		let data;
 
 		data = JSON.parse(raw);
-		if (ws === peer || ws === gstreamer) {
-			console.log('⬇️ Mensaje recibido desde ' + (ws === peer ? 'peer' : 'gstreamer') + ': ', data);
+		if (ws === gstreamer) {
+			console.log('⬇️ Mensaje recibido desde gstreamer:', data);
+		} else if (ws.peerId) {
+			console.log('⬇️ Mensaje recibido desde peer ' + ws.peerId + ':', data);
 		} else {
 			console.log('⬇️ Primer mensaje recibido:', data);
 		}
 
 		// Identificación inicial
 		if (data.type === 'client') {
-			console.log('🎥 Cliente navegador registrado');
-			peer = ws;
-			ws.send(JSON.stringify({type: 'ack', role: 'client'}));
+			const peerId = crypto.randomUUID();
+			ws.peerId = peerId;
+			peers.set(peerId, ws);
+			console.log(`🎥 Cliente navegador registrado: ${peerId}`);
+			ws.send(JSON.stringify({type: 'ack', role: 'client', peer_id: peerId}));
 			return;
 		}
 		if (data.type === 'gstreamer') {
@@ -42,21 +47,33 @@ wss.on('connection', (ws) => {
 		}
 
 		// Reenvío SDP/ICE
-		if (ws === peer && gstreamer) {
+		if (ws !== gstreamer && gstreamer) {
+			// VALIDACIÓN: Si es una answer y tiene m=video 0, el cliente (PC) ha rechazado el stream
+			if (data.type === 'answer' && data.sdp && /m=video 0/.test(data.sdp)) {
+				console.error(`❌ El cliente ${ws.peerId} rechazó el video (m=video 0). Limpiando en GStreamer...`);
+				gstreamer.send(JSON.stringify({type: 'remove', peer_id: ws.peerId}));
+				return;
+			}
+
 			const dataToSend = JSON.stringify(data);
 			console.log('→ Reenvío a GStreamer:', dataToSend);
 			gstreamer.send(dataToSend);
-		} else if (ws === gstreamer && peer) {
-			const dataToSend = JSON.stringify(data);
-			console.log('→ Reenvío al navegador:', dataToSend);
-			peer.send(dataToSend);
+		} else if (ws === gstreamer && data.peer_id) {
+			const peerSocket = peers.get(data.peer_id);
+			if (peerSocket) {
+				const dataToSend = JSON.stringify(data);
+				console.log(`→ Reenvío al navegador ${data.peer_id}:`, dataToSend);
+				peerSocket.send(dataToSend);
+			} else {
+				console.warn(`⚠️ Peer no encontrado: ${data.peer_id}`);
+			}
 		}
 	});
 
 	ws.on('close', () => {
-		if (ws === peer) {
-			console.log('❌ Peer desconectado');
-			peer = null;
+		if (ws.peerId) {
+			console.log(`❌ Peer desconectado: ${ws.peerId}`);
+			peers.delete(ws.peerId);
 		}
 		if (ws === gstreamer) {
 			console.log('❌ GStreamer desconectado');
@@ -68,10 +85,12 @@ wss.on('connection', (ws) => {
 // Servir archivos estáticos en /public
 app.use(express.static(path.join(__dirname, 'public')));
 
+let webrtcProcess = null;
+
 server.listen(HTTP_PORT, () => {
 	console.log(`🌍 Servidor WebRTC en ${getLocalIPAddress()}:${HTTP_PORT}`);
 	console.log('🚀 Iniciando proceso WebRTC...');
-	let webrtcProcess = spawn('./webrtc_screen', {
+	webrtcProcess = spawn('./webrtc_screen', {
 		env: {
 			...process.env,
 			GST_DEBUG: '3',

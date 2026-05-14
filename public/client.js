@@ -1,82 +1,107 @@
 // public/client.js
 const video = document.getElementById('stream');
 let pc;
+let peerId;
 
-// Conecta y registra
-const ws = new WebSocket(`ws://kali.local:8000/ws`);
+// Conecta al servidor usando el host actual
+const ws = new WebSocket(`ws://${window.location.host}/ws`);
+
 ws.addEventListener('open', () => {
-	console.log('🔌 WS abierto, registro client');
+	console.log('🔌 WS abierto, registrando cliente...');
 	ws.send(JSON.stringify({type: 'client'}));
 });
 
 ws.addEventListener('message', async (ev) => {
 	const msg = JSON.parse(ev.data);
-	console.log('⬅️ Recibido en browser:', msg);
+	console.log('⬅️ Recibido:', msg.type);
 
-	if (!pc) {
-		pc = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
-
-		pc.onicecandidate = (e) => {
-			if (e.candidate) {
-				ws.send(
-					JSON.stringify({
-						type: 'ice',
-						sdpMLineIndex: e.candidate.sdpMLineIndex,
-						candidate: e.candidate.candidate,
-					}),
-				);
-				console.log('ICE candidate enviado:', e.candidate);
-			}
-		};
-		pc.ontrack = (e) => {
-			if (video && e.streams[0]) {
-				video.srcObject = e.streams[0];
-				video.autoplay = true;
-				video.playsInline = true;
-
-				video.onloadedmetadata = async () => {
-					try {
-						await video.play();
-						console.log('▶️ Reproducción automática iniciada');
-
-						if (video.requestFullscreen) {
-							await video.requestFullscreen();
-							console.log('🖥️ Pantalla completa activada');
-						} else if (video.webkitRequestFullscreen) {
-							// Safari
-							await video.webkitRequestFullscreen();
-						} else if (video.msRequestFullscreen) {
-							// IE
-							await video.msRequestFullscreen();
-						}
-					} catch (err) {
-						console.warn('⚠️ Error al reproducir o entrar a pantalla completa:', err);
-					}
-				};
-
-				console.log('▶️ Stream entrante asignado al <video>');
-			}
-		};
-	}
 	if (msg.type === 'ack' && msg.role === 'client') {
-		ws.send(JSON.stringify({type: 'ready'}));
-		console.log('📨 Enviado: ready');
+		peerId = msg.peer_id;
+		console.log('✅ Registrado con Peer ID:', peerId);
+		// Notificamos que estamos listos para recibir oferta
+		ws.send(JSON.stringify({type: 'ready', peer_id: peerId}));
 	}
 
 	if (msg.type === 'offer') {
-		console.log('▶️ Setting remote offer');
-		await pc.setRemoteDescription(new RTCSessionDescription(msg));
-		const answer = await pc.createAnswer();
-		await pc.setLocalDescription(answer);
-		console.log('▶️ Enviando answer');
-		ws.send(JSON.stringify({type: 'answer', sdp: pc.localDescription.sdp}));
-	} else if (msg.type === 'ice' && msg.candidate) {
-		console.log('▶️ Agregando ICE candidate');
-		await pc.addIceCandidate(
-			new RTCIceCandidate({
-				candidate: msg.candidate,
-				sdpMLineIndex: msg.sdpMLineIndex,
-			}),
-		);
+		console.log('▶️ Recibida oferta SDP, negociando...');
+
+		if (!pc) {
+			pc = new RTCPeerConnection({
+				iceServers: [{urls: 'stun:stun.l.google.com:19302'}],
+				bundlePolicy: 'max-bundle',
+			});
+
+			// Forzamos la recepción de video
+			pc.addTransceiver('video', {direction: 'recvonly'});
+
+			pc.onicecandidate = (e) => {
+				if (e.candidate && peerId) {
+					ws.send(
+						JSON.stringify({
+							type: 'ice',
+							peer_id: peerId,
+							sdpMLineIndex: e.candidate.sdpMLineIndex,
+							candidate: e.candidate.candidate,
+						}),
+					);
+				}
+			};
+
+			pc.ontrack = (e) => {
+				console.log('📺 Stream de video recibido');
+				if (video && e.streams[0]) {
+					video.srcObject = e.streams[0];
+					video.play().catch((err) => console.warn('⚠️ Error al reproducir video:', err));
+				}
+			};
+
+			pc.onconnectionstatechange = () => {
+				console.log('⚡ Estado de conexión:', pc.connectionState);
+				if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+					console.warn('❌ Conexión fallida, reiniciando...');
+					location.reload();
+				}
+			};
+		}
+
+		try {
+			await pc.setRemoteDescription(new RTCSessionDescription(msg));
+			const answer = await pc.createAnswer();
+			await pc.setLocalDescription(answer);
+
+			// Verificación de seguridad: si el navegador rechaza el video, lo veremos aquí
+			if (answer.sdp.includes('m=video 0')) {
+				console.error('❌ El navegador ha rechazado el flujo de video (puerto 0 en SDP)');
+			}
+
+			ws.send(
+				JSON.stringify({
+					type: 'answer',
+					sdp: pc.localDescription.sdp,
+					peer_id: peerId,
+				}),
+			);
+			console.log('📤 Respuesta SDP enviada');
+		} catch (err) {
+			console.error('❌ Error en la negociación SDP:', err);
+		}
 	}
+
+	if (msg.type === 'ice' && msg.candidate && pc) {
+		try {
+			await pc.addIceCandidate(
+				new RTCIceCandidate({
+					candidate: msg.candidate,
+					sdpMLineIndex: msg.sdpMLineIndex,
+				}),
+			);
+		} catch (err) {
+			console.warn('⚠️ Error al agregar ICE candidate:', err);
+		}
+	}
+});
+
+ws.addEventListener('close', () => {
+	console.log('❌ Conexión WS cerrada. Recargando en 3s...');
+	setTimeout(() => location.reload(), 3000);
 });
