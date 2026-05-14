@@ -41,7 +41,9 @@ wss.on('connection', (ws) => {
 
 		// Identificación inicial
 		if (data.type === 'client') {
-			const peerId = crypto.randomUUID();
+			const deviceName = data.deviceName || 'Device';
+			const peerId = `${deviceName}-${crypto.randomUUID()}`;
+
 			ws.peerId = peerId;
 			peers.set(peerId, ws);
 			console.log(`🎥 Cliente navegador registrado: ${peerId}`);

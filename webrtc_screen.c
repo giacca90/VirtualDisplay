@@ -171,13 +171,6 @@ static WebRTCClient* create_client(const gchar *peer_id) {
     client->webrtcbin = gst_element_factory_make("webrtcbin", NULL);
     g_object_set(client->webrtcbin, "bundle-policy", 3, "latency", 0, NULL);
 
-    // Intentar silenciar webrtcbin/nicesrc (aunque nicesrc es interno, webrtcbin suele propagar)
-    GstPad *w_pad = gst_element_get_static_pad(client->webrtcbin, "src_%u");
-    if (w_pad) {
-        gst_pad_add_probe(w_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, on_stream_start_probe, "webrtc-stream", NULL);
-        gst_object_unref(w_pad);
-    }
-
     gst_bin_add_many(GST_BIN(pipeline), client->queue, client->webrtcbin, NULL);
 
     GstPad *q_src = gst_element_get_static_pad(client->queue, "src");
@@ -379,7 +372,7 @@ int main(int argc, char *argv[]) {
 
     payloader = gst_element_factory_make("rtph264pay", "pay");
     // config-interval=-1 para que rtph264pay use el codec_data de las caps
-    g_object_set(payloader, "config-interval", -1, "pt", 96, "packetization-mode", 1, NULL);
+    g_object_set(payloader, "config-interval", 1, "pt", 96, NULL);
 
     GstElement *rtpcaps = gst_element_factory_make("capsfilter", "rtpcaps");
     // Quitamos el profile-level-id manual para evitar errores de concordancia. 

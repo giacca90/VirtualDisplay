@@ -3,12 +3,49 @@ const video = document.getElementById('stream');
 let pc;
 let peerId;
 
+function getDeviceName() {
+	try {
+		const ua = navigator.userAgent;
+		let os = 'UnknownOS';
+		let model = '';
+
+		// Detección de Sistema Operativo
+		if (/windows/i.test(ua)) os = 'Windows';
+		else if (/android/i.test(ua)) os = 'Android';
+		else if (/linux/i.test(ua)) os = 'Linux';
+		else if (/iPhone|iPad|iPod/i.test(ua)) os = 'iOS';
+		else if (/macintosh/i.test(ua)) os = 'macOS';
+
+		// Intentar obtener modelo de dispositivo (especialmente en Android)
+		if (/android/i.test(ua)) {
+			const match = ua.match(/Android [^;]+; ([^;)]+)/);
+			if (match) model = `_${match[1].split(' Build')[0]}`;
+		} else if (/iPhone/i.test(ua)) model = '_iPhone';
+		else if (/iPad/i.test(ua)) model = '_iPad';
+
+		// Detección de Navegador
+		let browser = 'Browser';
+		if (/edg/i.test(ua)) browser = 'Edge';
+		else if (/brave/i.test(ua) || (navigator.brave && navigator.brave.isBrave())) browser = 'Brave';
+		else if (/chrome|crios/i.test(ua)) browser = 'Chrome';
+		else if (/firefox|fxios/i.test(ua)) browser = 'Firefox';
+		else if (/safari/i.test(ua) && !/chrome|crios/i.test(ua)) browser = 'Safari';
+		else if (/opr|opera/i.test(ua)) browser = 'Opera';
+
+		// Limpiar y formatear
+		let name = `${os}${model}_${browser}`;
+		return name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+	} catch (e) {
+		return 'Device';
+	}
+}
+
 // Conecta al servidor usando el host actual
 const ws = new WebSocket(`ws://${window.location.host}/ws`);
 
 ws.addEventListener('open', () => {
 	console.log('🔌 WS abierto, registrando cliente...');
-	ws.send(JSON.stringify({type: 'client'}));
+	ws.send(JSON.stringify({type: 'client', deviceName: getDeviceName()}));
 });
 
 ws.addEventListener('message', async (ev) => {
