@@ -49,19 +49,6 @@ static void remove_client(const gchar *peer_id);
 static void adjust_framerate(gint delta);
 
 // --- UTILIDADES ---
-// Función de sondeo (probe) para manejar el evento GST_EVENT_STREAM_START.
-// Se usa para asegurar que el stream se inicia con el ID correcto.
-static GstPadProbeReturn on_stream_start_probe(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
-    GstEvent *event = gst_pad_probe_info_get_event(info);
-    if (GST_EVENT_TYPE(event) == GST_EVENT_STREAM_START) {
-        GstEvent *new_event = gst_event_new_stream_start((const gchar *)user_data);
-        gst_event_unref(event);
-        info->data = new_event;
-        return GST_PAD_PROBE_REMOVE;
-    }
-    return GST_PAD_PROBE_OK;
-}
-
 // Convierte un objeto JsonObject a una cadena JSON.
 static gchar *object_to_json(JsonObject *obj) {
     JsonNode *root = json_node_alloc();
@@ -352,7 +339,14 @@ int main(int argc, char *argv[]) {
     encoder = gst_element_factory_make("vaapih264enc", "enc");
     if (encoder) {
         // VAAPI: Forzamos baseline quitando frames B y fijando el periodo de keyframes
-        g_object_set(encoder, "max-bframes", 0, "bitrate", 9000, "rate-control", 2, "keyframe-period", 5, NULL);
+        g_object_set(encoder, 
+            "max-bframes", 0, 
+            "bitrate", 9000, 
+            "rate-control", 2, 
+            "keyframe-period", 5,
+            "quality-level", 7,
+            "refs", 1,
+             NULL);
     } else {
         encoder = gst_element_factory_make("x264enc", "enc");
         if (encoder) {
@@ -366,7 +360,7 @@ int main(int argc, char *argv[]) {
     // Para eso necesitamos forzar el formato 'avc' y alineación 'au' justo después.
 
     GstElement *h264caps = gst_element_factory_make("capsfilter", "h264caps");
-    GstCaps *h_caps = gst_caps_from_string("video/x-h264,stream-format=avc,alignment=au,profile=constrained-baseline");
+    GstCaps *h_caps = gst_caps_from_string("video/x-h264,stream-format=avc,profile=constrained-baseline");
     g_object_set(h264caps, "caps", h_caps, NULL);
     gst_caps_unref(h_caps);
 
@@ -385,11 +379,6 @@ int main(int argc, char *argv[]) {
 
     gst_bin_add_many(GST_BIN(pipeline), ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, rtpcaps, tee, NULL);
     gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, rtpcaps, tee, NULL);
-
-    // Fix para el FIXME de <src> (ximagesrc) usando un probe limpio
-    GstPad *src_pad = gst_element_get_static_pad(ximagesrc, "src");
-    gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, on_stream_start_probe, "desktop-stream", NULL);
-    gst_object_unref(src_pad);
 
     // Inicializar geometría antes de empezar
     check_monitor(NULL);
