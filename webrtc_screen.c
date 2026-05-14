@@ -219,6 +219,17 @@ static void adjust_framerate(gint delta) {
     g_print("🎬 Framerate adaptativo: %d fps\n", current_fps);
 }
 
+static gboolean bus_call(GstBus *bus, GstMessage *msg, gpointer user_data) {
+    switch (GST_MESSAGE_TYPE(msg)) {
+        case GST_MESSAGE_LATENCY:
+            gst_bin_recalculate_latency(GST_BIN(pipeline));
+            break;
+        default:
+            break;
+    }
+    return TRUE;
+}
+
 // Maneja los mensajes recibidos a través de la conexión WebSocket.
 static void on_ws_message(SoupWebsocketConnection *conn, SoupWebsocketDataType type, GBytes *message, gpointer user_data) {
     if (type != SOUP_WEBSOCKET_DATA_TEXT) return;
@@ -389,7 +400,12 @@ int main(int argc, char *argv[]) {
     // Inicializar geometría antes de empezar
     check_monitor(NULL);
 
+    GstBus *bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
+    gst_bus_add_watch(bus, bus_call, loop);
+    g_object_unref(bus);
+
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    gst_bin_recalculate_latency(GST_BIN(pipeline));
     g_timeout_add_seconds(1, check_monitor, NULL);
 
     SoupSession *sess = soup_session_new();
