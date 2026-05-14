@@ -162,6 +162,12 @@ static WebRTCClient* create_client(const gchar *peer_id) {
     client->peer_id = g_strdup(peer_id);
 
     client->queue = gst_element_factory_make("queue", NULL);
+    g_object_set(client->queue,
+        "max-size-buffers", 1,
+        "max-size-bytes", 0,
+        "max-size-time", 0,
+        "flush-on-eos", TRUE,
+        NULL);
     client->webrtcbin = gst_element_factory_make("webrtcbin", NULL);
     g_object_set(client->webrtcbin, "bundle-policy", 3, "latency", 0, NULL);
 
@@ -225,7 +231,9 @@ static void adjust_framerate(gint delta) {
     if (new_fps == current_fps) return;
 
     current_fps = new_fps;
-    GstCaps *new_caps = gst_caps_from_string(g_strdup_printf("video/x-raw,framerate=%d/1,format=BGRx", current_fps));
+    gchar *caps_str = g_strdup_printf("video/x-raw,framerate=%d/1,format=BGRx", current_fps);
+    GstCaps *new_caps = gst_caps_from_string(caps_str);
+    g_free(caps_str);
     g_object_set(capsfilter, "caps", new_caps, NULL);
     gst_caps_unref(new_caps);
     g_print("🎬 Framerate adaptativo: %d fps\n", current_fps);
@@ -337,7 +345,13 @@ int main(int argc, char *argv[]) {
     g_object_set(capsfilter, "caps", caps, NULL); gst_caps_unref(caps);
 
     queue_elem = gst_element_factory_make("queue", "q_main");
-    g_object_set(queue_elem, "max-size-buffers", 1, "leaky", 2, "flush-on-eos", TRUE, NULL);
+    g_object_set(queue_elem, 
+        "max-size-buffers", 1, 
+        "max-size-bytes", 0,
+        "max-size-time", 0,
+        "leaky", 2, 
+        "flush-on-eos", TRUE, 
+        NULL);
     postproc = gst_element_factory_make("vaapipostproc", "pp");
     encoder = gst_element_factory_make("vaapih264enc", "enc");
     if (encoder) {
@@ -348,7 +362,7 @@ int main(int argc, char *argv[]) {
         encoder = gst_element_factory_make("x264enc", "enc");
         if (encoder) {
             // CRÍTICO para latencia en software: tune=zerolatency y speed-preset=ultrafast
-            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 0, "bitrate", 8000, NULL); // Cambiado a 'ultrafast' para menor carga de CPU en cliente
+            g_object_set(encoder, "tune", 0x00000004, "speed-preset", 0, "bitrate", 8000, "threads", 1, NULL); // Cambiado a 'ultrafast' para menor carga de CPU en cliente
         }
     }
 
@@ -371,6 +385,9 @@ int main(int argc, char *argv[]) {
     GstPad *src_pad = gst_element_get_static_pad(ximagesrc, "src");
     gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, on_stream_start_probe, "desktop-stream", NULL);
     gst_object_unref(src_pad);
+
+    // Inicializar geometría antes de empezar
+    check_monitor(NULL);
 
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
     g_timeout_add_seconds(1, check_monitor, NULL);
