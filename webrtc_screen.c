@@ -152,7 +152,7 @@ static WebRTCClient* create_client(const gchar *peer_id) {
     g_object_set(client->queue,
         "max-size-buffers", 1,
         "max-size-bytes", 0,
-        "max-size-time", 0,
+        "max-size-time", 20000000,
         "flush-on-eos", TRUE,
         NULL);
     client->webrtcbin = gst_element_factory_make("webrtcbin", NULL);
@@ -324,34 +324,42 @@ int main(int argc, char *argv[]) {
     // Filtro de capacidades para establecer el framerate y el formato de video.
     capsfilter = gst_element_factory_make("capsfilter", "fps");
     // Crea las capacidades para video raw a 60 FPS en formato BGRx.
-    GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=60/1,format=BGRx");
+    GstCaps *caps = gst_caps_from_string("video/x-raw,framerate=60/1,format=BGRx,colorimetry=sRGB");
     g_object_set(capsfilter, "caps", caps, NULL); gst_caps_unref(caps);
 
     queue_elem = gst_element_factory_make("queue", "q_main");
     g_object_set(queue_elem, 
         "max-size-buffers", 1, 
         "max-size-bytes", 0,
-        "max-size-time", 0,
+        "max-size-time", 20000000,
         "leaky", 2, 
         "flush-on-eos", TRUE, 
         NULL);
+
     postproc = gst_element_factory_make("vaapipostproc", "pp");
+
     encoder = gst_element_factory_make("vaapih264enc", "enc");
     if (encoder) {
-        // VAAPI: Forzamos baseline quitando frames B y fijando el periodo de keyframes
+        // VAAPI: Forzamos baseline quitando frames B y reduciendo el intervalo entre I-frames
         g_object_set(encoder, 
             "max-bframes", 0, 
             "bitrate", 9000, 
             "rate-control", 2, 
-            "keyframe-period", 5,
-            "quality-level", 7,
+            "keyframe-period", 30,
             "refs", 1,
              NULL);
     } else {
         encoder = gst_element_factory_make("x264enc", "enc");
         if (encoder) {
             // x264enc: tune=zerolatency(4), speed-preset=ultrafast(0)
-            g_object_set(encoder, "tune", 4, "speed-preset", 0, "bitrate", 8000, "threads", 4, NULL);
+            g_object_set(encoder, 
+                "tune", 4, 
+                "speed-preset", 0, 
+                "bitrate", 8000, 
+                "threads", 1,
+                "key-int-max", 30,
+                "bframes", 0,
+                NULL);
         }
     }
 
@@ -366,19 +374,17 @@ int main(int argc, char *argv[]) {
 
     payloader = gst_element_factory_make("rtph264pay", "pay");
     // config-interval=-1 para que rtph264pay use el codec_data de las caps
-    g_object_set(payloader, "config-interval", 1, "pt", 96, NULL);
-
-    GstElement *rtpcaps = gst_element_factory_make("capsfilter", "rtpcaps");
-    // Quitamos el profile-level-id manual para evitar errores de concordancia. 
-    // El navegador lo detectará del stream AVC que acabamos de forzar.
-    GstCaps *v_caps = gst_caps_from_string("application/x-rtp,media=video,encoding-name=H264,payload=96,packetization-mode=(string)1");
-    g_object_set(rtpcaps, "caps", v_caps, NULL); gst_caps_unref(v_caps);
+    g_object_set(payloader, 
+        "config-interval", 1, 
+        "pt", 96, 
+        "aggregate-mode", 0,
+        NULL);
 
     tee = gst_element_factory_make("tee", "tee");
     g_object_set(tee, "allow-not-linked", TRUE, NULL); 
 
-    gst_bin_add_many(GST_BIN(pipeline), ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, rtpcaps, tee, NULL);
-    gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, rtpcaps, tee, NULL);
+    gst_bin_add_many(GST_BIN(pipeline), ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, tee, NULL);
+    gst_element_link_many(ximagesrc, capsfilter, queue_elem, postproc, encoder, parser_elem, h264caps, payloader, tee, NULL);
 
     // Inicializar geometría antes de empezar
     check_monitor(NULL);
